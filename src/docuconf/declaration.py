@@ -20,6 +20,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
+import pydantic_core
 from pydantic import AliasChoices, BaseModel, ConfigDict, SecretStr, TypeAdapter, UrlConstraints
 from pydantic import ValidationError as PydanticValidationError
 from pydantic.fields import FieldInfo
@@ -45,14 +46,15 @@ from .markers import (
 from .re2 import non_re2_feature
 from .values import CaBundle, Keystore, TlsKeyPair
 
-try:  # private in pydantic, but the base classes of every URL type
+# pydantic < 2.10 defines its URL types as Annotated[pydantic_core.Url, UrlConstraints(...)];
+# later versions as subclasses of the private _BaseUrl and _BaseMultiHostUrl.
+_URL_TYPES: tuple[type, ...] = (pydantic_core.Url, pydantic_core.MultiHostUrl)
+try:
     from pydantic.networks import _BaseMultiHostUrl, _BaseUrl
 
-    _URL_TYPES: tuple[type, ...] = (_BaseUrl, _BaseMultiHostUrl)
+    _URL_TYPES += (_BaseUrl, _BaseMultiHostUrl)
 except ImportError:  # pragma: no cover
-    from pydantic import AnyUrl
-
-    _URL_TYPES = (AnyUrl,)
+    pass
 
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 INPUT_NAME = re.compile(r"^[a-z]([-a-z0-9]{0,40}[a-z0-9])?$")
@@ -216,7 +218,8 @@ def _attr(meta: Sequence[Any], name: str) -> Any:
 
 
 def _is_subclass(t: Any, base: type | tuple[type, ...]) -> bool:
-    return isinstance(t, type) and issubclass(t, base)
+    # On 3.10, list[str] passes isinstance(..., type) but not issubclass.
+    return isinstance(t, type) and get_origin(t) is None and issubclass(t, base)
 
 
 def _str_values(t: Any) -> list[str] | None:

@@ -84,7 +84,10 @@ def test_expired_and_not_yet_valid(gateway_root: Path) -> None:
         make_leaf(names, issuer=ca, not_before=now - timedelta(days=30), not_after=now - timedelta(days=1)),
         ca=ca,
     )
-    assert file_codes(load_error()) == {"serving-tls": ["certificate_invalid", "certificate_invalid"]}
+    err = load_error()
+    # With cryptography >= 45 the chain check also reports the expired leaf.
+    assert set(file_codes(err)["serving-tls"]) == {"certificate_invalid"}
+    assert "certificate expired at" in str(err)
     write_tls(
         gateway_root / TLS_DIR,
         make_leaf(names, issuer=ca, not_before=now + timedelta(days=1), not_after=now + timedelta(days=90)),
