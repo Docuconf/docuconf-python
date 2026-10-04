@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "docuconf-pydantic"
+dynamic = ["version"]
+description = "Typed configuration contracts for pydantic-settings: export your BaseSettings as a docuconf CUE contract and validate env vars, config files and TLS material at boot."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "docuconf contributors" }]
+keywords = ["pydantic", "pydantic-settings", "configuration", "environment", "kubernetes", "cue", "contract", "tls"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Framework :: Pydantic :: 2",
+  "Topic :: System :: Systems Administration",
+  "Typing :: Typed",
+]
+dependencies = [
+  "pydantic>=2.7,<3",
+  "pydantic-settings>=2.3,<3",
+  "cryptography>=42",
+  "tomli>=2; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=6"]
+
+[project.scripts]
+docuconf = "docuconf.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/docuconf/docuconf-python"
+Source = "https://github.com/docuconf/docuconf-python"
+Issues = "https://github.com/docuconf/docuconf-python/issues"
+Specification = "https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md"
+
+[dependency-groups]
+dev = ["pytest>=8", "PyYAML>=6", "ruff>=0.6", "mypy>=1.11", "types-PyYAML"]
+
+[tool.hatch.version]
+path = "src/docuconf/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/docuconf"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/docuconf", "tests", "README.md", "RELEASING.md", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF022"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["docuconf"]
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
