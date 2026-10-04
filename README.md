@@ -1,0 +1,225 @@
+# docuconf-pydantic
+
+Typed configuration contracts for [pydantic-settings](https://github.com/pydantic/pydantic-settings).
+
+[docuconf](https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md) treats an application's configuration
+(environment variables, config files, TLS certificates, CA bundles, keystores) as an API between the app and the
+Kubernetes platform that runs it. This package lets a Python service:
+
+1. **Declare** its inputs with the `BaseSettings` class it already has. Descriptions come from
+   `Field(description=...)`, constraints from `ge`/`le`/`min_length`/`max_length`/`pattern`, enums from `Literal`
+   or `Enum`, secrets from `SecretStr`. docuconf adds only what pydantic cannot express: a secret marker for types
+   other than `SecretStr`, URL schemes, CSV lists and file inputs.
+2. **Export** that declaration as a CUE contract (`contract.cue`), which the platform validates its values against
+   before deploying.
+3. **Validate at boot**: pydantic-settings loads and parses as usual, and docuconf checks the rest (file inputs, TLS
+   material, the spec's parsing rules), then reports *every* problem at once with a stable error code.
+
+> **Licence:** not chosen yet. There is no LICENSE file until the project settles on one.
+
+## Install
+
+```sh
+pip install docuconf-pydantic            # Python 3.10+
+pip install 'docuconf-pydantic[yaml]'    # for YAML config files (PyYAML)
+```
+
+The distribution is `docuconf-pydantic`; the import package is `docuconf`.
+
+## Example
+
+```python
+# orders/settings.py
+from datetime import timedelta
+from typing import Annotated, ClassVar, Literal
+
+from pydantic import BaseModel, Field, SecretStr
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from docuconf import ConfigFile, Csv, TlsFile, TlsKeyPair, Url
+
+
+class Rates(BaseModel):
+    per_minute: int = Field(ge=1)
+    burst: int = Field(0, ge=0)
+
+
+class Settings(BaseSettings):
+    docuconf_service: ClassVar[str] = "orders"  # metadata.name in the contract
+    model_config = SettingsConfigDict(env_prefix="ORDERS_")
+
+    port: int = Field(8080, ge=1, le=65535, description="HTTP listen port")
+    log_level: Literal["debug", "info", "warn", "error"] = Field("info", description="Minimum log level")
+    database_url: Annotated[SecretStr, Url(schemes=("postgres", "postgresql"))] = Field(
+        description="Primary Postgres connection string"
+    )
+    api_token: SecretStr = Field(min_length=20, description="Token for the payments API")
+    timeout: timedelta = Field(timedelta(seconds=30), le=timedelta(minutes=5), description="Upstream timeout")
+    allowed_origins: Annotated[list[str], NoDecode, Csv()] = Field(
+        default_factory=list, description="CORS origins allowed to call the API"
+    )
+
+    # File inputs: a TLS key pair (kubernetes.io/tls layout) and a JSON file bound to the Rates model.
+    tls: Annotated[
+        TlsKeyPair,
+        TlsFile(path="/etc/orders/tls", dns_names=("orders.internal",), min_remaining="720h", reload="watch"),
+    ] = Field(description="Certificate the service serves HTTPS with")
+    rates: Annotated[Rates, ConfigFile(path="/etc/orders/rates/rates.json", path_env="ORDERS_RATES_FILE")] = Field(
+        description="Per-client rate limits"
+    )
+```
+
+At boot:
+
+```python
+import docuconf
+from orders.settings import Settings
+
+settings = docuconf.load(Settings)           # raises docuconf.ConfigValidationError listing every problem
+ssl_context = settings.tls.server_context()  # reloads its certificate when the files rotate
+print(settings.rates.per_minute)
+```
+
+A failed boot reports everything at once, without secret values:
+
+```text
+docuconf.errors.ConfigValidationError: docuconf: 4 configuration problems:
+  - ORDERS_DATABASE_URL [invalid_scheme]: URL scheme should be one of 'postgres', 'postgresql'
+  - ORDERS_PORT [out_of_range]: Input should be less than or equal to 65535 (got '70000')
+  - rates [schema_mismatch]: per_minute: Input should be greater than or equal to 1
+  - tls [certificate_expiring]: certificate expires at 2026-10-20T09:00:00Z, less than 720h from now
+```
+
+Export the contract in CI, and commit or publish it with the image:
+
+```sh
+docuconf export orders.settings:Settings --out contract.cue
+docuconf export orders.settings:Settings --out contract.cue --check   # fail if it is out of date
+docuconf export orders.settings:Settings --name orders --app-version "$GIT_SHA"
+```
+
+From Python, `docuconf.to_contract(Settings)` returns the CUE text and `docuconf.contract_data(Settings)` the same
+contract as plain data. The contract exported for this example is
+[`examples/app/contract.cue`](examples/app/contract.cue). If you prefer a classmethod, the `DocuconfSettings` mixin
+adds `Settings.load()`.
+
+## How the declaration maps to the contract
+
+| pydantic-settings | contract |
+|---|---|
+| `str` (`min_length`, `max_length`, `pattern`) | `string` (`minLength`, `maxLength`, `pattern`) |
+| `int` (`ge`, `le`; `gt`/`lt` become inclusive bounds ±1) | `int` (`min`, `max`) |
+| `float` (`ge`, `le`) | `float` |
+| `bool` | `bool` |
+| `timedelta` (`ge`, `le`) | `duration`, `encoding: "iso8601"` |
+| `AnyUrl`, `HttpUrl`, `PostgresDsn`..., or `Annotated[str \| SecretStr, Url(schemes=...)]` | `url` with `schemes` |
+| `Literal["a", "b"]`, `Enum` of strings | `enum` |
+| `list[str]`, `list[int]` (`min_length`, `max_length`) | `list` (`minItems`, `maxItems`), `encoding: "json"` |
+| `Annotated[list[str], NoDecode, Csv(";")]` | `list`, `encoding: "csv"`, `separator: ";"` |
+| a model, a `dict`, a list of models... | `json`, with `schema` from pydantic's JSON Schema |
+| a nested model with `env_nested_delimiter` | one variable per field, e.g. `APP_DB__HOST` |
+| `SecretStr`, or `Annotated[T, Secret()]` | `secret: true` |
+| `Field(examples=...)`, `Field(deprecated=...)` | `examples`, `deprecated` |
+| `Annotated[T, Meta(group=..., replaced_by=..., config_key=...)]` | `group`, `deprecated.replacedBy`, `configKey` |
+| `Annotated[T, Exclude()]` | left out (for values from a secrets manager, say) |
+
+**Env names** follow pydantic-settings' own rules: `env_prefix` plus the field name, or the field's `alias` /
+`validation_alias` (the first `AliasChoices` entry is exported; the others still work at boot). Contracts use
+upper-case names. pydantic-settings matches names case-insensitively by default, so `port` and `PORT` both work at
+boot. With `case_sensitive=True`, the names in your class must already be upper-case.
+
+**Encodings** (SPEC §5) are the ones pydantic-settings parses natively: lists as JSON (`["a","b"]`) unless the field
+uses `NoDecode` with `docuconf.Csv`, and durations as ISO 8601 (`PT90S`). Platform authors still write `"90s"` and
+`["a", "b"]`; the platform's renderer converts. Duration defaults and bounds are exported in canonical Go form
+(`1h30m`).
+
+**Patterns** are exported as written. By default pydantic matches `pattern` with the Rust `regex` crate. Like RE2, it
+has no lookaround or backreferences and matches anywhere in the value, as CUE's `=~` does, so anchor with `^...$` to
+match the whole value. docuconf rejects non-RE2 syntax at declaration time, including under
+`regex_engine="python-re"`, which also gets a warning because Python's `$` and `\d` behave differently. `\d` and
+`\w` are Unicode-aware in pydantic but ASCII-only in RE2.
+
+**Declaration checks** raise `docuconf.DeclarationError` from `load`, `to_contract` and the CLI. They cover the env
+name format, descriptions of at least 5 characters, defaults that satisfy their own constraints, defaults or
+examples on secrets, non-RE2 patterns, `Csv` without `NoDecode`, file input names and paths, a `path_env` that is also
+a variable, and keystore password variables that are not declared secrets. Warnings (logged at debug level by
+`load`, printed by the CLI) cover names that look like feature flags (`FF_`, `FEATURE_`, `ENABLE_`; see SPEC §10),
+exclusive float bounds, and types exported as strings.
+
+## File inputs
+
+A file input is a field annotated with a file marker. docuconf reads and checks the file, then passes the value to
+the settings constructor, so the field has a typed value like any other.
+
+| marker | field type | checked at boot |
+|---|---|---|
+| `ConfigFile(path, format=json\|yaml\|toml)` | the model it binds to | parses (a UTF-8 byte-order mark is accepted) and validates against the model |
+| `TlsFile(path, dns_names, key_algorithms, min_remaining, require_ca)` | `TlsKeyPair` | `tls.crt` and `tls.key` parse and match; validity and `min_remaining`; SAN DNS names (a wildcard covers one label); key algorithm; chain order; chain to `ca.crt` |
+| `CaBundleFile(path, min_certificates)` | `CaBundle` | at least `min_certificates` parseable PEM certificates |
+| `KeystoreFile(path, password_var)` | `Keystore` | the PKCS#12 file opens with the password variable |
+| `TextFile(path, pattern, min_length, max_length)` | `str` (the content) or `Path` | UTF-8, length, pattern |
+| `BinaryFile(path)` | `bytes` (the content) or `Path` | exists, readable, within `max_size` |
+
+Every marker also takes `name` (by default the field name in kebab-case), `path_env`, `reload` (`restart` or
+`watch`), `max_size`, `required` (by default, whether the field is required) and `group`. An optional file input
+looks like `Annotated[CaBundle | None, CaBundleFile(...)] = None`. TLS and keystore inputs are always secret; mark
+other secret files with `Secret()`.
+
+TLS checks use the `cryptography` package. The chain to `ca.crt` is verified with `cryptography.x509.verification`
+(cryptography 45 or newer) under a permissive extension policy, since private CAs rarely follow the Web PKI profile;
+CA certificates must still carry basicConstraints. With older cryptography, the SDK falls back to checking that the
+top of `tls.crt` is, or is directly issued by, a certificate in `ca.crt`.
+
+**`reload="watch"`**: `docuconf.load` starts a daemon thread that polls each watched input every 2 seconds
+(`watch_interval=` changes this). Kubernetes updates projected volumes by swapping a symlink, so the watcher stats
+every file of the input through symlinks and re-reads all of them together when any has changed. A reload that fails
+its checks is logged and the old value is kept. `TlsKeyPair`, `CaBundle` and `Keystore` values are updated in place,
+and every `SSLContext` made by `TlsKeyPair.server_context()` or `client_context()` loads the new certificate. Other
+values are replaced on the settings object. Listen with `pair.on_change(callback)` or
+`docuconf.get_watcher(settings).on_reload(callback)`, and stop with `docuconf.get_watcher(settings).stop()`.
+
+## At boot
+
+- Every violation carries a SPEC §11.2 code: `missing_required`, `invalid_type`, `out_of_range`, `pattern_mismatch`,
+  `not_in_enum`, `invalid_scheme`, `too_few_items`, `too_many_items`, `file_missing`, `file_unreadable`,
+  `file_too_large`, `file_malformed`, `schema_mismatch`, `certificate_invalid`, `certificate_expiring`,
+  `certificate_name_mismatch`, `key_mismatch`, `keystore_unreadable`. `err.violations` lists them as
+  `Violation(input, kind, code, message)`.
+- Secret values are never printed. For a secret variable, docuconf keeps only pydantic messages that do not echo
+  the input; anything else, such as a custom validator's message, becomes `invalid value (secret, not shown)`.
+- The message is also written to `/dev/termination-log` when it exists, so `kubectl describe pod` shows it.
+  `DOCUCONF_TERMINATION_LOG` overrides the path, and `load(..., termination_log=False)` turns it off.
+- An empty value means *unset* for every type except `string` (SPEC §5): a defaulted variable takes its default, and
+  a required one is `missing_required`. Values are never trimmed. Integers must fit in 64 bits, and floats must be
+  finite.
+- `DOCUCONF_FILE_ROOT=/some/dir` is prepended to every absolute file path, including paths read from a `path_env`
+  variable. Use it for local development and tests.
+- Sources and precedence are pydantic-settings': constructor arguments, then environment variables, then a `.env`
+  file if you set `env_file` (opt-in; real environment variables win), then defaults. docuconf reads the
+  environment the same way for its own checks.
+- Variables not in the declaration are ignored. Setting a deprecated variable logs a warning.
+
+## Not supported yet
+
+- JKS keystores (PKCS#12 only).
+- Profiles (SPEC §4.4) and the contract-first mode (loading a `contract.cue` at runtime).
+- Markdown documentation generation.
+- `AliasPath` aliases. A nested model without `env_nested_delimiter` is exported as one `json` variable.
+
+Known issue: the meta-schema builds its scheme check as a regular expression without escaping, so a scheme
+containing `+` (such as `postgresql+asyncpg`, which `PostgresDsn` allows) never matches on the platform side. Use
+`Url(schemes=...)` to list only the schemes you deploy with until the spec fixes this.
+
+## Development
+
+```sh
+uv venv && uv pip install -e . --group dev     # or: pip install -e . pytest PyYAML ruff mypy types-PyYAML
+pytest
+ruff check . && ruff format --check . && mypy
+UPDATE_GOLDEN=1 pytest tests/test_export.py    # after an intended change to the sample export
+```
+
+The export tests run `cue vet -c` on generated contracts against the meta-schema in
+[docuconf-go](https://github.com/docuconf/docuconf-go) (`spec/cue`). They look for it in `../docuconf-go/spec/cue`
+or `$DOCUCONF_SPEC_CUE`, and for `cue` in `$CUE`, `~/go/bin/cue` or `PATH`; without them, those tests are skipped.
+See [RELEASING.md](RELEASING.md) for publishing.

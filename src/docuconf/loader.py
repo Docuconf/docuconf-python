@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource
+from typing_extensions import Self
 
 from .declaration import _MISSING, Declaration, VarSpec, declaration
 from .errors import ConfigValidationError, ErrorCode, Violation, write_termination_log
@@ -140,6 +141,7 @@ def _violations_from(decl: Declaration, e: PydanticValidationError, skip: set[st
         if loc and loc[0] in skip:
             continue
         v = None
+        nested: tuple[str, ...] = ()
         for i in range(len(loc), 0, -1):
             v = decl.by_loc.get(loc[:i])
             if v is not None:
@@ -244,5 +246,7 @@ class DocuconfSettings:
     """
 
     @classmethod
-    def load(cls: Callable[..., S], **kwargs: Any) -> S:
-        return load(cls, **kwargs)  # type: ignore[arg-type]
+    def load(cls, **kwargs: Any) -> Self:
+        if not issubclass(cls, BaseSettings):
+            raise TypeError("DocuconfSettings must be mixed into a pydantic-settings BaseSettings class")
+        return cast(Self, load(cls, **kwargs))

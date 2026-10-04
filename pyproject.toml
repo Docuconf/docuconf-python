@@ -28,6 +28,7 @@ dependencies = [
   "pydantic>=2.7,<3",
   "pydantic-settings>=2.7,<3",
   "cryptography>=42",
+  "typing-extensions>=4.6",
   "tomli>=2; python_version < '3.11'",
 ]
 
@@ -53,7 +54,7 @@ path = "src/docuconf/_version.py"
 packages = ["src/docuconf"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/docuconf", "tests", "README.md", "RELEASING.md", "pyproject.toml"]
+include = ["src/docuconf", "tests", "examples", "README.md", "RELEASING.md", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

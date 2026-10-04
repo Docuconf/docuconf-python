@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        deps: [latest]
+        include:
+          # The oldest versions pyproject.toml allows.
+          - python: "3.10"
+            deps: minimum
+    steps:
+      - uses: actions/checkout@v4
+
+      # The contract meta-schema (spec/cue) lives in docuconf-go; the export
+      # tests vet generated contracts against it.
+      - uses: actions/checkout@v4
+        with:
+          repository: docuconf/docuconf-go
+          path: docuconf-go
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install cue
+        run: go install cuelang.org/go/cmd/cue@v0.17.1
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest PyYAML ruff mypy types-PyYAML
+          if [ "${{ matrix.deps }}" = minimum ]; then
+            python -m pip install "pydantic==2.7.0" "pydantic-settings==2.7.0" "cryptography==42.0.0" "tomli==2.0.1"
+          fi
+
+      - name: Lint
+        if: matrix.deps == 'latest'
+        run: |
+          ruff check .
+          ruff format --check .
+          mypy
+
+      - name: Test
+        run: pytest
+        env:
+          DOCUCONF_SPEC_CUE: ${{ github.workspace }}/docuconf-go/spec/cue
+          DOCUCONF_REQUIRE_VET: "1"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      # Install the wheel into a clean environment and use the console script.
+      - name: Smoke test the wheel
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/smoke/bin/python -c "import docuconf; print(docuconf.__version__)"
+          /tmp/smoke/bin/docuconf --version

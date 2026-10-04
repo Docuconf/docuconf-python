@@ -233,3 +233,13 @@ def test_durations() -> None:
     assert format_go_duration(parse_go_duration("2h45m30s")) == "2h45m30s"
     with pytest.raises(ValueError):
         parse_go_duration("5 minutes")
+
+
+def test_readme_example(tmp_path: Path) -> None:
+    from examples.app.settings import Settings
+
+    out = docuconf.to_contract(Settings)
+    assert out == (HERE.parent / "examples/app/contract.cue").read_text()
+    if CAN_VET:
+        r = vet(out, tmp_path)
+        assert r.returncode == 0, r.stdout + r.stderr
