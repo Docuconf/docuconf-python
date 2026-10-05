@@ -168,7 +168,7 @@ def load(
     *,
     watch: bool = True,
     watch_interval: float = 2.0,
-    termination_log: str | None | bool = None,
+    termination_log: str | bool | None = None,
     now: datetime | None = None,
     **init: Any,
 ) -> S:
