@@ -15,8 +15,6 @@ Kubernetes platform that runs it. This package lets a Python service:
 3. **Validate at boot**: pydantic-settings loads and parses as usual, and docuconf checks the rest (file inputs, TLS
    material, the spec's parsing rules), then reports *every* problem at once with a stable error code.
 
-> **Licence:** not chosen yet. There is no LICENSE file until the project settles on one.
-
 ## Install
 
 ```sh
@@ -311,3 +309,7 @@ The export tests run `cue vet -c` on generated contracts against the meta-schema
 [docuconf-go](https://github.com/docuconf/docuconf-go) (`spec/cue`). They look for it in `../docuconf-go/spec/cue`
 or `$DOCUCONF_SPEC_CUE`, and for `cue` in `$CUE`, `~/go/bin/cue` or `PATH`; without them, those tests are skipped.
 See [RELEASING.md](RELEASING.md) for publishing.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).

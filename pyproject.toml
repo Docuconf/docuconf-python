@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,6 +7,8 @@ name = "docuconf-pydantic"
 dynamic = ["version"]
 description = "Typed configuration contracts for pydantic-settings: export your BaseSettings as a docuconf CUE contract and validate env vars, config files and TLS material at boot."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "docuconf contributors" }]
 keywords = ["pydantic", "pydantic-settings", "configuration", "environment", "kubernetes", "cue", "contract", "tls"]
@@ -54,7 +56,7 @@ path = "src/docuconf/_version.py"
 packages = ["src/docuconf"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/docuconf", "tests", "examples", "README.md", "RELEASING.md", "pyproject.toml"]
+include = ["src/docuconf", "tests", "examples", "README.md", "RELEASING.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
