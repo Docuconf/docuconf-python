@@ -298,10 +298,6 @@ starts with `vault:`, `op://` or `ref+` as `invalid_type`, naming the variable a
 - Markdown documentation generation.
 - `AliasPath` aliases. A nested model without `env_nested_delimiter` is exported as one `json` variable.
 
-Known issue: the meta-schema builds its scheme check as a regular expression without escaping, so a scheme
-containing `+` (such as `postgresql+asyncpg`, which `PostgresDsn` allows) never matches on the platform side. Use
-`Url(schemes=...)` to list only the schemes you deploy with until the spec fixes this.
-
 ## Development
 
 ```sh
