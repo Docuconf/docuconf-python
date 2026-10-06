@@ -314,7 +314,7 @@ and durations as `go`, `iso8601`, `seconds` or `timespan`. docuconf builds a pyd
 contract (`docuconf.contract_settings`) with the same constraints and markers a hand-written declaration would use,
 and loads it through the same checks as `docuconf.load`, so the two modes cannot drift apart. Violations raise
 `ConfigValidationError` and go to the termination log as usual. `json` variables are checked against their `schema`
-with the `jsonschema` extra (without it, a contract with a schema is rejected). The mode loads variables only: a
+with the `jsonschema` extra; without it, schemas are not checked and a warning is logged. The mode loads variables only: a
 contract with `files` or `overlays` is a `DeclarationError`. Variable names are matched case-sensitively.
 
 ## Conformance

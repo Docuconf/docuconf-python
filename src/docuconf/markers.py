@@ -11,6 +11,7 @@ They go in ``typing.Annotated`` next to the type, beside pydantic's own
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from pydantic import GetCoreSchemaHandler, SecretStr
 from pydantic_core import PydanticCustomError, core_schema
 
 from . import durations
+
+log = logging.getLogger("docuconf")
 
 _URL = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+$")
 
@@ -157,7 +160,8 @@ class JsonValue:
     """A ``json`` variable checked against a JSON Schema, for the contract-first mode.
 
     The value is decoded from JSON text and, when ``schema`` is set, validated
-    with the ``jsonschema`` package (the ``jsonschema`` extra).
+    with the ``jsonschema`` package (the ``jsonschema`` extra). Without that
+    package, the schema is exported but not checked, and a warning is logged.
     """
 
     # Compared and hashed by value: typing caches Annotated[...] by its arguments, so two markers that compared
@@ -165,7 +169,15 @@ class JsonValue:
     schema: Mapping[str, Any] | None = None
 
     def __get_pydantic_core_schema__(self, source: Any, handler: GetCoreSchemaHandler) -> core_schema.CoreSchema:
-        check = schema_validator(self.schema) if self.schema else None
+        check = None
+        if self.schema:
+            try:
+                check = schema_validator(self.schema)
+            except ImportError:
+                log.warning(
+                    "docuconf: jsonschema is not installed, so json values are not checked against their schema; "
+                    "pip install 'docuconf-pydantic[jsonschema]'"
+                )
 
         def decode(v: Any) -> Any:
             if not isinstance(v, str):

@@ -22,7 +22,7 @@ from . import durations
 from .declaration import _Builder
 from .errors import ConfigValidationError, DeclarationError, write_termination_log
 from .loader import Env, build
-from .markers import Csv, Duration, IndexedList, JsonValue, Secret, Url
+from .markers import Csv, Duration, IndexedList, JsonValue, Secret, Url, schema_validator
 from .re2 import non_re2_feature
 
 API_VERSION = "docuconf.dev/v1alpha1"
@@ -146,15 +146,9 @@ def _field(name: str, var: Mapping[str, Any], problems: list[str]) -> tuple[Any,
         schema = var.get("schema")
         if schema:
             try:
-                from .markers import schema_validator
-
                 schema_validator(schema)
             except ImportError:
-                problems.append(
-                    f"{name}: checking a json variable against its schema needs the jsonschema package; "
-                    "pip install 'docuconf-pydantic[jsonschema]'"
-                )
-                return None
+                pass  # JsonValue logs that the schema is not checked
             except Exception as e:  # jsonschema.SchemaError
                 problems.append(f"{name}: invalid JSON Schema: {getattr(e, 'message', e)}")
                 return None
