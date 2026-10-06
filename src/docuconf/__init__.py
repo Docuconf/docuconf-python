@@ -2,7 +2,8 @@
 
 Typed configuration contracts between an application and the Kubernetes
 platform that runs it: keep your ``BaseSettings`` class, export it as a CUE
-contract, and validate the real environment and file inputs at boot.
+contract, and validate the real environment, file inputs and config-file
+overlays at boot.
 """
 
 from ._version import __version__
@@ -18,11 +19,13 @@ from .markers import (
     Exclude,
     KeystoreFile,
     Meta,
+    Overlay,
     Secret,
     TextFile,
     TlsFile,
     Url,
 )
+from .overlays import with_overlays
 from .values import CaBundle, Keystore, TlsKeyPair
 from .watch import Watcher, get_watcher
 
@@ -42,6 +45,7 @@ __all__ = [
     "Keystore",
     "KeystoreFile",
     "Meta",
+    "Overlay",
     "Secret",
     "TextFile",
     "TlsFile",
@@ -55,4 +59,5 @@ __all__ = [
     "get_watcher",
     "load",
     "to_contract",
+    "with_overlays",
 ]

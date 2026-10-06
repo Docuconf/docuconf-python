@@ -188,6 +188,35 @@ class BinaryFile(FileInput):
     """Opaque bytes. Field type: ``bytes`` (the content) or ``Path`` (just the location)."""
 
 
+@dataclass(frozen=True)
+class Overlay:
+    """A config-file overlay (SPEC §4.7): a file the platform mounts, layered
+    between the app's baked-in config files and environment variables.
+
+    Declare overlays on the settings class and load them with
+    :func:`docuconf.with_overlays` in ``settings_customise_sources``::
+
+        class Settings(BaseSettings):
+            docuconf_overlays: ClassVar[Sequence[Overlay]] = (
+                Overlay("platform", "/app/config/settings.yaml", reload="watch"),
+            )
+
+    The file holds each value at its field path (``db.port`` is
+    ``{"db": {"port": 5432}}``), which the contract exports as ``configKey``
+    with ``keySeparator: "."``. It is optional: a missing file adds nothing.
+    """
+
+    #: Overlay name in the contract (a DNS label).
+    name: str
+    #: Where the platform mounts the file. Its directory must not hold files the app ships with.
+    path: str
+    #: ``json``, ``yaml`` or ``toml``; inferred from the file extension when omitted.
+    format: Literal["json", "yaml", "toml"] | None = None
+    #: ``restart`` (read once) or ``watch`` (docuconf reloads it; see ``docuconf.get_watcher``).
+    reload: Reload = "restart"
+    description: str | None = None
+
+
 FILE_MARKERS = (ConfigFile, TlsFile, CaBundleFile, KeystoreFile, TextFile, BinaryFile)
 
 __all__ = [
@@ -199,6 +228,7 @@ __all__ = [
     "FileInput",
     "KeystoreFile",
     "Meta",
+    "Overlay",
     "Secret",
     "TextFile",
     "TlsFile",

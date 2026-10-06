@@ -41,6 +41,8 @@ def contract_data(
     }
     if decl.files:
         out["files"] = {f.name: f.contract() for f in decl.files}
+    if decl.overlays:
+        out["overlays"] = {o.name: o.contract() for o in sorted(decl.overlays, key=lambda o: o.name)}
     return out
 
 
@@ -52,7 +54,7 @@ def package_name(service: str) -> str:
 def to_contract(cls: type[BaseSettings], *, name: str | None = None, app_version: str | None = None) -> str:
     """Export ``cls`` as a ``contract.cue`` document.
 
-    Deterministic: variables and file inputs are sorted by name.
+    Deterministic: variables, file inputs and overlays are sorted by name.
     """
     data = contract_data(cls, name=name, app_version=app_version)
     body = cue.fields(list(data.items()), "\t")

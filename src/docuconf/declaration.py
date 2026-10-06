@@ -10,6 +10,7 @@ express (see ``docuconf.markers``).
 from __future__ import annotations
 
 import enum
+import posixpath
 import re
 import types
 import typing
@@ -38,6 +39,7 @@ from .markers import (
     FileInput,
     KeystoreFile,
     Meta,
+    Overlay,
     Secret,
     TextFile,
     TlsFile,
@@ -60,6 +62,10 @@ ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 INPUT_NAME = re.compile(r"^[a-z]([-a-z0-9]{0,40}[a-z0-9])?$")
 SERVICE_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 ABS_PATH = re.compile(r"^/[A-Za-z0-9._/-]+$")
+FileFormat = Literal["json", "yaml", "toml"]
+FORMAT_BY_SUFFIX: dict[str, FileFormat] = {".json": "json", ".yaml": "yaml", ".yml": "yaml", ".toml": "toml"}
+#: Overlay keys nest at most this deep (SPEC §4.7, #MaxKeyDepth).
+MAX_KEY_DEPTH = 8
 FEATURE_FLAG = re.compile(r"^(FF|FEATURE|FEATURE_FLAG|ENABLE)_")
 
 VarType = Literal["string", "int", "float", "bool", "duration", "url", "enum", "list", "json"]
@@ -129,6 +135,42 @@ class FileSpec:
 
 
 @dataclass
+class OverlaySpec:
+    """One config-file overlay (SPEC §4.7)."""
+
+    name: str
+    format: FileFormat
+    path: str
+    reload: Literal["restart", "watch"]
+    description: str | None
+    marker: Overlay
+
+    def contract(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if self.description:
+            out["description"] = self.description
+        out["format"] = self.format
+        out["path"] = self.path
+        out["keySeparator"] = OVERLAY_KEY_SEPARATOR
+        if self.reload == "watch":
+            out["reload"] = "watch"
+        return out
+
+
+#: pydantic-settings' config file sources nest values by field path; the contract joins it with ".".
+OVERLAY_KEY_SEPARATOR = "."
+
+
+def mount_dir(f: FileSpec) -> str:
+    """The directory the platform mounts for a file input (SPEC §4.6)."""
+    return f.marker.path if f.type == "tls" else posixpath.dirname(f.marker.path)
+
+
+def bad_path(path: str) -> bool:
+    return bool(not ABS_PATH.match(path) or re.search(r"(^|/)\.\.?(/|$)", path) or "//" in path or path.endswith("/"))
+
+
+@dataclass
 class Declaration:
     settings_cls: type[BaseSettings]
     service: str | None
@@ -137,6 +179,7 @@ class Declaration:
     warnings: list[str]
     case_sensitive: bool
     env_file: Any = None
+    overlays: list[OverlaySpec] = field(default_factory=list)
     by_loc: dict[tuple[str, ...], VarSpec] = field(default_factory=dict)
 
     def var(self, name: str) -> VarSpec | None:
@@ -258,6 +301,7 @@ class _Builder:
         self.warnings: list[str] = []
         self.vars: list[VarSpec] = []
         self.files: list[FileSpec] = []
+        self.overlays: list[OverlaySpec] = []
 
     def build(self) -> Declaration:
         if self.python_re:
@@ -265,6 +309,7 @@ class _Builder:
                 'regex_engine="python-re": patterns are exported as RE2, but Python re semantics '
                 "differ ($ also matches before a final newline, \\d matches non-ASCII digits)"
             )
+        self.read_overlays()
         for fname, fi in self.cls.model_fields.items():
             self.field(fname, fi)
         self.check_cross()
@@ -279,6 +324,7 @@ class _Builder:
             warnings=self.warnings,
             case_sensitive=self.case_sensitive,
             env_file=self.cls.model_config.get("env_file"),
+            overlays=self.overlays,
         )
         for v in vars_sorted:
             decl.by_loc[v.loc] = v
@@ -404,6 +450,17 @@ class _Builder:
             common["deprecated"] = dep
         if m and m.config_key:
             common["configKey"] = m.config_key
+        if self.overlays and not secret:
+            # Where pydantic-settings' config file sources read the value: the field path, by alias.
+            key = OVERLAY_KEY_SEPARATOR.join(alias_loc)
+            if m and m.config_key and m.config_key != key:
+                problem(f"config_key {m.config_key!r} must be {key!r}, where an overlay file holds this value")
+            elif any(OVERLAY_KEY_SEPARATOR in p for p in alias_loc):
+                problem(f"an overlay cannot hold {key!r}: a key part contains {OVERLAY_KEY_SEPARATOR!r}")
+            elif len(alias_loc) > MAX_KEY_DEPTH:
+                problem(f"an overlay cannot hold {key!r}: more than {MAX_KEY_DEPTH} levels deep")
+            else:
+                common["configKey"] = key
 
         py_default = _MISSING
         if not fi.is_required():
@@ -592,7 +649,7 @@ class _Builder:
         if len(description) < 5:
             problem('needs a description of at least 5 characters: Field(description="...")')
         path = marker.path
-        if not ABS_PATH.match(path) or re.search(r"(^|/)\.\.?(/|$)", path) or "//" in path or path.endswith("/"):
+        if bad_path(path):
             problem(f"path {path!r} must be absolute and normalised")
         if marker.reload not in ("restart", "watch"):
             problem('reload must be "restart" or "watch"')
@@ -724,6 +781,45 @@ class _Builder:
             )
         )
 
+    # -- overlays ---------------------------------------------------------
+
+    def read_overlays(self) -> None:
+        declared = getattr(self.cls, "docuconf_overlays", None) or ()
+        if isinstance(declared, Overlay):
+            declared = (declared,)
+        names: set[str] = set()
+        for o in declared:
+            if not isinstance(o, Overlay):
+                self.problems.append(f"docuconf_overlays: {o!r} is not a docuconf.Overlay")
+                continue
+
+            def problem(msg: str, name: str = o.name) -> None:
+                self.problems.append(f"overlay {name}: {msg}")
+
+            if not INPUT_NAME.match(o.name):
+                problem(f"name must be a DNS label matching {INPUT_NAME.pattern}")
+            if o.name in names:
+                problem("declared twice")
+            names.add(o.name)
+            if bad_path(o.path):
+                problem(f"path {o.path!r} must be absolute and normalised")
+            fmt = o.format
+            if fmt is None:
+                suffix = Path(o.path).suffix.lower()
+                fmt = FORMAT_BY_SUFFIX.get(suffix)
+                if fmt is None:
+                    problem("cannot infer the format from the file extension; set format=")
+                    continue
+            elif fmt not in ("json", "yaml", "toml"):
+                problem('format must be "json", "yaml" or "toml"')
+                continue
+            if o.reload not in ("restart", "watch"):
+                problem('reload must be "restart" or "watch"')
+            description = o.description.strip() if o.description is not None else None
+            if description is not None and len(description) < 5:
+                problem("description must be at least 5 characters")
+            self.overlays.append(OverlaySpec(o.name, fmt, o.path, o.reload, description, o))
+
     def check_cross(self) -> None:
         seen: dict[str, str] = {}
         for v in self.vars:
@@ -732,6 +828,15 @@ class _Builder:
             seen[v.name] = ".".join(v.loc)
         names: set[str] = set()
         path_envs: set[str] = set()
+        mounts: dict[str, str] = {}
+        for f in self.files:
+            mounts.setdefault(mount_dir(f), f"file {f.name}")
+        for o in self.overlays:
+            d = posixpath.dirname(o.path)
+            if d in mounts:
+                # The platform mounts the overlay's directory, which would hide the other input.
+                self.problems.append(f"overlay {o.name}: directory {d} is also mounted for {mounts[d]}")
+            mounts[d] = f"overlay {o.name}"
         for f in self.files:
             if f.name in names:
                 self.problems.append(f"file {f.name}: declared twice")
