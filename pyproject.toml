@@ -36,6 +36,8 @@ dependencies = [
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6"]
+# Contract-first mode: check json variables against their JSON Schema.
+jsonschema = ["jsonschema>=4.18"]
 
 [project.scripts]
 docuconf = "docuconf.cli:main"
@@ -47,7 +49,7 @@ Issues = "https://github.com/docuconf/docuconf-python/issues"
 Specification = "https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md"
 
 [dependency-groups]
-dev = ["pytest>=8", "PyYAML>=6", "ruff>=0.6", "mypy>=1.11", "types-PyYAML"]
+dev = ["pytest>=8", "PyYAML>=6", "jsonschema>=4.18", "ruff>=0.6", "mypy>=1.11", "types-PyYAML", "types-jsonschema"]
 
 [tool.hatch.version]
 path = "src/docuconf/_version.py"

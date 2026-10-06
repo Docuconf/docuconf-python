@@ -20,6 +20,7 @@ Kubernetes platform that runs it. This package lets a Python service:
 ```sh
 pip install docuconf-pydantic            # Python 3.10+
 pip install 'docuconf-pydantic[yaml]'    # for YAML config files (PyYAML)
+pip install 'docuconf-pydantic[jsonschema]'  # contract-first mode: check json variables against their schema
 ```
 
 The distribution is `docuconf-pydantic`; the import package is `docuconf`.
@@ -110,6 +111,7 @@ adds `Settings.load()`.
 | `float` (`ge`, `le`) | `float` |
 | `bool` | `bool` |
 | `timedelta` (`ge`, `le`) | `duration`, `encoding: "iso8601"` |
+| `Annotated[timedelta, Duration("go")]` (or `"seconds"`, `"timespan"`) | `duration` with that `encoding` |
 | `AnyUrl`, `HttpUrl`, `PostgresDsn`..., or `Annotated[str \| SecretStr, Url(schemes=...)]` | `url` with `schemes` |
 | `Literal["a", "b"]`, `Enum` of strings | `enum` |
 | `list[str]`, `list[int]` (`min_length`, `max_length`) | `list` (`minItems`, `maxItems`), `encoding: "json"` |
@@ -133,7 +135,8 @@ boot. With `case_sensitive=True`, the names in your class must already be upper-
 added on its own.
 
 **Encodings** (SPEC §5) are the ones pydantic-settings parses natively: lists as JSON (`["a","b"]`) unless the field
-uses `NoDecode` with `docuconf.Csv`, and durations as ISO 8601 (`PT90S`). Platform authors still write `"90s"` and
+uses `NoDecode` with `docuconf.Csv`, and durations as ISO 8601 (`PT90S`) unless the field carries
+`docuconf.Duration("go")` (`1m30s`), `Duration("seconds")` (`90`) or `Duration("timespan")` (`00:01:30`). Platform authors still write `"90s"` and
 `["a", "b"]`; the platform's renderer converts. Duration defaults and bounds are exported in canonical Go form
 (`1h30m`).
 
@@ -294,18 +297,52 @@ starts with `vault:`, `op://` or `ref+` as `invalid_type`, naming the variable a
   - DATABASE_URL [invalid_type]: holds an unresolved vault: reference; the injector that should resolve it did not run
 ```
 
+## Contract-first mode
+
+Without a settings class, `docuconf.load_contract` validates an environment against a contract given as JSON (export
+a hand-written `contract.cue` with `cue export contract.cue`) and returns the typed values, one attribute per
+variable:
+
+```python
+values = docuconf.load_contract("contract.json")  # or a dict, or JSON text; env= defaults to os.environ
+print(values.PORT, values.TIMEOUT)                # int, timedelta
+```
+
+It reads every encoding in SPEC §5: lists as `csv` (with `separator`), `json` or `indexed` (`NAME__0`, `NAME__1`...),
+and durations as `go`, `iso8601`, `seconds` or `timespan`. docuconf builds a pydantic-settings class from the
+contract (`docuconf.contract_settings`) with the same constraints and markers a hand-written declaration would use,
+and loads it through the same checks as `docuconf.load`, so the two modes cannot drift apart. Violations raise
+`ConfigValidationError` and go to the termination log as usual. `json` variables are checked against their `schema`
+with the `jsonschema` extra (without it, a contract with a schema is rejected). The mode loads variables only: a
+contract with `files` or `overlays` is a `DeclarationError`. Variable names are matched case-sensitively.
+
+## Conformance
+
+`tests/test_conformance.py` runs the shared conformance suite from docuconf-go (`conformance/cases.json`, SPEC §12)
+through the contract-first mode and reports each failing case by its `id`:
+
+```sh
+DOCUCONF_CONFORMANCE=../docuconf-go/conformance/cases.json DOCUCONF_REQUIRE_CONFORMANCE=1 pytest tests/test_conformance.py
+```
+
+Without `DOCUCONF_CONFORMANCE` it looks for `../docuconf-go/conformance/cases.json` and skips when the file is
+missing, unless `DOCUCONF_REQUIRE_CONFORMANCE=1` (as in CI) makes that a failure. The SDK supports both capability
+tags, `int64` (Python's `int` holds every 64-bit value) and `json-schema` (with the `jsonschema` package installed),
+so no case is skipped. Without `jsonschema`, the two `json-schema` cases are skipped.
+
 ## Not supported yet
 
 - JKS keystores (PKCS#12 only).
-- Profiles (SPEC §4.4) and the contract-first mode (loading a `contract.cue` at runtime). Values in baked-in config
-  files are not exported as defaults, so give fields defaults in Python if the platform need not set them.
+- Profiles (SPEC §4.4). Values in baked-in config files are not exported as defaults, so give fields defaults in
+  Python if the platform need not set them.
+- File inputs and overlays in the contract-first mode, which loads variables only.
 - Markdown documentation generation.
 - `AliasPath` aliases. A nested model without `env_nested_delimiter` is exported as one `json` variable.
 
 ## Development
 
 ```sh
-uv venv && uv pip install -e . --group dev     # or: pip install -e . pytest PyYAML ruff mypy types-PyYAML
+uv venv && uv pip install -e . --group dev     # or: pip install -e '.[jsonschema]' pytest PyYAML ruff mypy types-PyYAML
 pytest
 ruff check . && ruff format --check . && mypy
 UPDATE_GOLDEN=1 pytest tests/test_export.py    # after an intended change to the sample export
@@ -314,6 +351,7 @@ UPDATE_GOLDEN=1 pytest tests/test_export.py    # after an intended change to the
 The export tests run `cue vet -c` on generated contracts against the meta-schema in
 [docuconf-go](https://github.com/docuconf/docuconf-go) (`spec/cue`). They look for it in `../docuconf-go/spec/cue`
 or `$DOCUCONF_SPEC_CUE`, and for `cue` in `$CUE`, `~/go/bin/cue` or `PATH`; without them, those tests are skipped.
+The conformance runner reads the same checkout (see [Conformance](#conformance)).
 See [RELEASING.md](RELEASING.md) for publishing.
 
 ## Licence

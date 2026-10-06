@@ -10,14 +10,17 @@ They go in ``typing.Annotated`` next to the type, beside pydantic's own
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Literal
 
 from pydantic import GetCoreSchemaHandler, SecretStr
 from pydantic_core import PydanticCustomError, core_schema
+
+from . import durations
 
 _URL = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+$")
 
@@ -104,6 +107,103 @@ class Csv:
             return v
 
         return core_schema.no_info_before_validator_function(split, handler(source))
+
+
+@dataclass(frozen=True)
+class Duration:
+    """The wire encoding of a ``timedelta`` variable (SPEC §5).
+
+    pydantic parses ISO 8601 (``PT90S``) natively, which is what a plain
+    ``timedelta`` field exports. ``Duration("go")`` reads Go syntax
+    (``1m30s``) instead, ``Duration("seconds")`` a decimal number of seconds
+    and ``Duration("timespan")`` a .NET ``TimeSpan`` (``[d.]hh:mm:ss[.fff]``)::
+
+        timeout: Annotated[timedelta, Duration("go")] = timedelta(seconds=30)
+
+    Python's ``timedelta`` holds microseconds, so finer digits are dropped.
+    """
+
+    encoding: durations.Encoding = "iso8601"
+
+    def __get_pydantic_core_schema__(self, source: Any, handler: GetCoreSchemaHandler) -> core_schema.CoreSchema:
+        encoding = self.encoding
+        if encoding == "iso8601":
+            return handler(source)
+
+        def parse(v: Any) -> Any:
+            if not isinstance(v, str):
+                return v
+            try:
+                return durations.parse(v, encoding)
+            except ValueError:
+                raise PydanticCustomError(
+                    "duration_parsing", "Input should be a duration in {encoding} form", {"encoding": encoding}
+                ) from None
+
+        return core_schema.no_info_before_validator_function(parse, handler(source))
+
+
+@dataclass(frozen=True)
+class IndexedList:
+    """A list read from ``NAME__0``, ``NAME__1``... (SPEC §5).
+
+    pydantic-settings cannot read that form itself, so only the contract-first
+    mode (:func:`docuconf.load_contract`), which gathers the items first, uses it.
+    """
+
+
+@dataclass(frozen=True)
+class JsonValue:
+    """A ``json`` variable checked against a JSON Schema, for the contract-first mode.
+
+    The value is decoded from JSON text and, when ``schema`` is set, validated
+    with the ``jsonschema`` package (the ``jsonschema`` extra).
+    """
+
+    # Compared and hashed by value: typing caches Annotated[...] by its arguments, so two markers that compared
+    # equal would share one cached annotation. A dict schema is unhashable, which turns that cache off.
+    schema: Mapping[str, Any] | None = None
+
+    def __get_pydantic_core_schema__(self, source: Any, handler: GetCoreSchemaHandler) -> core_schema.CoreSchema:
+        check = schema_validator(self.schema) if self.schema else None
+
+        def decode(v: Any) -> Any:
+            if not isinstance(v, str):
+                return v
+            try:
+                return json.loads(v, parse_constant=_reject_constant)
+            except ValueError:
+                raise PydanticCustomError("json_invalid", "Input should be valid JSON") from None
+
+        def validate(v: Any) -> Any:
+            if check is not None:
+                errors = sorted(check.iter_errors(v), key=lambda e: list(e.absolute_path))
+                if errors:
+                    first = errors[0]
+                    where = "/".join(str(p) for p in first.absolute_path) or "the value"
+                    raise PydanticCustomError(
+                        "schema_mismatch",
+                        "{where} does not match the JSON Schema: {detail}",
+                        {"where": where, "detail": first.message},
+                    )
+            return v
+
+        return core_schema.no_info_after_validator_function(
+            validate, core_schema.no_info_before_validator_function(decode, handler(source))
+        )
+
+
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
+
+
+def schema_validator(schema: Mapping[str, Any]) -> Any:
+    """A ``jsonschema`` validator for ``schema``; raises ``ImportError`` without the package."""
+    import jsonschema
+
+    cls = jsonschema.validators.validator_for(schema, default=jsonschema.Draft202012Validator)
+    cls.check_schema(dict(schema))
+    return cls(dict(schema))
 
 
 Reload = Literal["restart", "watch"]
@@ -224,6 +324,7 @@ __all__ = [
     "CaBundleFile",
     "ConfigFile",
     "Csv",
+    "Duration",
     "Exclude",
     "FileInput",
     "KeystoreFile",

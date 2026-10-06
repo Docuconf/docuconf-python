@@ -30,6 +30,7 @@ _CODES: dict[str, ErrorCode] = {
     "literal_error": "not_in_enum",
     "enum": "not_in_enum",
     "url_scheme": "invalid_scheme",
+    "schema_mismatch": "schema_mismatch",
 }
 # pydantic messages that never include the input, so are safe for secrets.
 _SAFE_FOR_SECRETS = (
@@ -43,6 +44,10 @@ _SAFE_FOR_SECRETS = (
         "url_too_long",
         "int_parsing",
         "float_parsing",
+        "bool_parsing",
+        "time_delta_parsing",
+        "duration_parsing",
+        "json_invalid",
         "too_short",
         "too_long",
     }
@@ -50,16 +55,26 @@ _SAFE_FOR_SECRETS = (
 
 
 class Env:
-    """The environment as pydantic-settings sees it (case folding, opt-in .env file)."""
+    """The environment as pydantic-settings sees it (case folding, opt-in .env file).
 
-    def __init__(self, cls: type[BaseSettings], decl: Declaration) -> None:
+    With ``values``, the environment is that mapping alone, as in the
+    contract-first mode, whose settings source reads :attr:`values`.
+    """
+
+    def __init__(self, cls: type[BaseSettings], decl: Declaration, values: Mapping[str, str] | None = None) -> None:
         self.case_sensitive = decl.case_sensitive
-        values: dict[str, str | None] = {}
+        self.own = values is not None
+        if values is not None:
+            self.values: dict[str, str | None] = {
+                (k if self.case_sensitive else k.lower()): v for k, v in values.items()
+            }
+            return
+        loaded: dict[str, str | None] = {}
         if decl.env_file:
             # pydantic-settings' own dotenv reader; real environment variables win.
-            values.update(DotEnvSettingsSource(cls).env_vars)
-        values.update(EnvSettingsSource(cls).env_vars)
-        self.values = values
+            loaded.update(DotEnvSettingsSource(cls).env_vars)
+        loaded.update(EnvSettingsSource(cls).env_vars)
+        self.values = loaded
 
     def __call__(self, name: str) -> str | None:
         return self.values.get(name if self.case_sensitive else name.lower())

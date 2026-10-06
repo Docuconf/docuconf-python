@@ -10,6 +10,7 @@ express (see ``docuconf.markers``).
 from __future__ import annotations
 
 import enum
+import json
 import posixpath
 import re
 import types
@@ -35,8 +36,11 @@ from .markers import (
     CaBundleFile,
     ConfigFile,
     Csv,
+    Duration,
     Exclude,
     FileInput,
+    IndexedList,
+    JsonValue,
     KeystoreFile,
     Meta,
     Overlay,
@@ -516,6 +520,11 @@ class _Builder:
 
     def classify(self, name: str, ann: Any, meta: list[Any], problem: Any) -> tuple[VarType | None, dict[str, Any]]:
         attrs: dict[str, Any] = {}
+        jv: JsonValue | None = _first(meta, JsonValue)
+        if jv is not None:
+            if jv.schema is not None:
+                attrs["schema"] = dict(jv.schema)
+            return "json", attrs
         url = _first(meta, Url)
         if url is not None or _is_subclass(ann, _URL_TYPES):
             schemes: list[str] = []
@@ -545,7 +554,8 @@ class _Builder:
             self.bounds(name, meta, attrs, lambda x: float(x) if isinstance(x, Decimal) else x)
             return "float", attrs
         if _is_subclass(ann, timedelta):
-            attrs["encoding"] = "iso8601"
+            enc: Duration | None = _first(meta, Duration)
+            attrs["encoding"] = enc.encoding if enc is not None else "iso8601"
             self.bounds(name, meta, attrs, lambda x: durations.to_go(x) if isinstance(x, timedelta) else x)
             return "duration", attrs
         values = _str_values(ann)
@@ -572,7 +582,9 @@ class _Builder:
             if items is not None:
                 attrs["items"] = items
                 csv = _first(meta, Csv)
-                if _has(meta, NoDecode):
+                if _has(meta, IndexedList):
+                    attrs["encoding"] = "indexed"
+                elif _has(meta, NoDecode):
                     attrs["encoding"] = "csv"
                     attrs["separator"] = csv.separator if csv else ","
                     if csv is None:
@@ -641,6 +653,8 @@ class _Builder:
         if vtype == "list":
             return [v.value if isinstance(v, enum.Enum) else v for v in value]
         if vtype == "json":
+            if ann is Any:  # a JsonValue variable: the default is JSON text, decoded when validated
+                return json.loads(value) if isinstance(value, str) else value
             return TypeAdapter(ann).dump_python(value, mode="json")
         if vtype in ("string", "url"):
             return str(value)
