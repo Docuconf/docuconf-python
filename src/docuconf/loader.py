@@ -77,6 +77,15 @@ def _set_path(d: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
     d[path[-1]] = value
 
 
+#: Reference schemes of injectors that resolve env values when the process starts (SPEC §4.5.1).
+INJECTOR_SCHEMES = ("vault:", "op://", "ref+")
+
+
+def unresolved_reference(raw: str) -> str | None:
+    """The injector scheme ``raw`` starts with, if it is still an unresolved reference."""
+    return next((s for s in INJECTOR_SCHEMES if raw.startswith(s)), None)
+
+
 def _precheck(v: VarSpec, raw: str, init: dict[str, Any], out: list[Violation]) -> bool:
     """SPEC §5 rules the host does not apply. Returns False if the var is handled."""
     if raw == "" and v.type != "string":
@@ -202,6 +211,19 @@ def load(
             dep = v.common["deprecated"]
             repl = f"; use {dep['replacedBy']}" if "replacedBy" in dep else ""
             log.warning("docuconf: %s is deprecated: %s%s", v.name, dep["message"], repl)
+        scheme = unresolved_reference(raw) if v.secret else None
+        if scheme is not None:
+            # SPEC §11.2: the injector did not run. Name the scheme, never the value.
+            violations.append(
+                Violation(
+                    v.name,
+                    "var",
+                    "invalid_type",
+                    f"holds an unresolved {scheme} reference; the injector that should resolve it did not run",
+                )
+            )
+            skip.add(v.name)
+            continue
         if not _precheck(v, raw, kwargs, violations) and violations and violations[-1].input == v.name:
             skip.add(v.name)
 

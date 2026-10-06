@@ -199,6 +199,20 @@ values are replaced on the settings object. Listen with `pair.on_change(callback
   environment the same way for its own checks.
 - Variables not in the declaration are ignored. Setting a deprecated variable logs a warning.
 
+## Injected secrets
+
+Platforms often supply secrets when the container starts rather than in the pod spec: Bank-Vaults' `vault-env`
+resolves `vault:secret/data/db#url`, and wrappers such as `op run` resolve `op://...` references, before the app
+starts. docuconf needs nothing for this: it reads the environment as the process sees it, after injection, validates
+injected values like any other, and never resolves references itself (SPEC §4.5.1).
+
+If the injector did not run, a secret variable still holds the raw reference. docuconf reports a secret whose value
+starts with `vault:`, `op://` or `ref+` as `invalid_type`, naming the variable and the scheme but never the value:
+
+```text
+  - DATABASE_URL [invalid_type]: holds an unresolved vault: reference; the injector that should resolve it did not run
+```
+
 ## Not supported yet
 
 - JKS keystores (PKCS#12 only).
