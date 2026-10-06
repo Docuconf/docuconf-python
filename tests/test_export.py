@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import pytest
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, conint
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 import docuconf
@@ -233,6 +233,28 @@ def test_durations() -> None:
     assert format_go_duration(parse_go_duration("2h45m30s")) == "2h45m30s"
     with pytest.raises(ValueError):
         parse_go_duration("5 minutes")
+
+
+def test_list_item_bounds() -> None:
+    class S(BaseSettings):
+        shards: list[Annotated[int, Field(ge=0, le=1023)]] = Field(description="Shard ids this instance owns")
+        ports: Annotated[list[conint(gt=0, lt=65536)], NoDecode, Csv()] = Field(  # type: ignore[valid-type]
+            default_factory=list, description="Ports to probe"
+        )
+        tags: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list, description="Metric tags")
+
+    vars_ = docuconf.contract_data(S, name="svc")["vars"]
+    assert (vars_["SHARDS"]["itemMin"], vars_["SHARDS"]["itemMax"]) == (0, 1023)
+    assert (vars_["PORTS"]["itemMin"], vars_["PORTS"]["itemMax"]) == (1, 65535)
+    assert "itemMin" not in vars_["TAGS"] and "itemMax" not in vars_["TAGS"]
+
+
+@needs_cue
+def test_list_item_bounds_pass_cue_vet(tmp_path: Path) -> None:
+    out = docuconf.to_contract(GatewaySettings)
+    assert "itemMin:     1" in out and "itemMax:     65535" in out
+    r = vet(out, tmp_path)
+    assert r.returncode == 0, r.stderr
 
 
 def test_readme_example(tmp_path: Path) -> None:

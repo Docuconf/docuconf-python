@@ -113,6 +113,7 @@ adds `Settings.load()`.
 | `AnyUrl`, `HttpUrl`, `PostgresDsn`..., or `Annotated[str \| SecretStr, Url(schemes=...)]` | `url` with `schemes` |
 | `Literal["a", "b"]`, `Enum` of strings | `enum` |
 | `list[str]`, `list[int]` (`min_length`, `max_length`) | `list` (`minItems`, `maxItems`), `encoding: "json"` |
+| `list[Annotated[int, Field(ge=0, le=1023)]]`, `list[conint(ge=0)]` | `list` of `int` with `itemMin`, `itemMax` |
 | `Annotated[list[str], NoDecode, Csv(";")]` | `list`, `encoding: "csv"`, `separator: ";"` |
 | a model, a `dict`, a list of models... | `json`, with `schema` from pydantic's JSON Schema |
 | a nested model with `env_nested_delimiter` | one variable per field, e.g. `APP_DB__HOST` |
@@ -125,6 +126,11 @@ adds `Settings.load()`.
 `validation_alias` (the first `AliasChoices` entry is exported; the others still work at boot). Contracts use
 upper-case names. pydantic-settings matches names case-insensitively by default, so `port` and `PORT` both work at
 boot. With `case_sensitive=True`, the names in your class must already be upper-case.
+
+**Item bounds** on an `int` list come from constraints on the item type, as pydantic writes them: `ge`/`le` (or
+`gt`/`lt`, ±1) on `list[Annotated[int, Field(...)]]` or `list[conint(...)]`. They are exported as `itemMin` and
+`itemMax`, and an item outside them is `out_of_range` at boot. Python's `int` holds any 64-bit value, so no bounds are
+added on its own.
 
 **Encodings** (SPEC §5) are the ones pydantic-settings parses natively: lists as JSON (`["a","b"]`) unless the field
 uses `NoDecode` with `docuconf.Csv`, and durations as ISO 8601 (`PT90S`). Platform authors still write `"90s"` and

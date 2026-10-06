@@ -116,6 +116,15 @@ def test_enum_and_scheme_and_list_bounds(gateway_root: Path, monkeypatch: pytest
     }
 
 
+def test_list_item_bounds(gateway_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORKER_PORTS", "[8081,0]")
+    assert codes(load_error()) == {"WORKER_PORTS": ["out_of_range"]}
+    monkeypatch.setenv("WORKER_PORTS", "[65536]")
+    assert codes(load_error()) == {"WORKER_PORTS": ["out_of_range"]}
+    monkeypatch.setenv("WORKER_PORTS", "[1,65535]")
+    assert docuconf.load(GatewaySettings, watch=False).worker_ports == [1, 65535]
+
+
 def test_url_needs_scheme(gateway_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PUBLIC_URL", "gateway.example.com")
     assert codes(load_error()) == {"PUBLIC_URL": ["invalid_type"]}
