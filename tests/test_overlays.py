@@ -165,7 +165,7 @@ def test_overlay_values_are_validated_like_env_values(app: Path) -> None:
 def test_overlay_int_must_fit_64_bits(app: Path) -> None:
     write_overlay(app, {"page_size": 2**70, "search": {"url": "https://search.internal"}})
     err = load_error()
-    assert [(v.input, v.code) for v in err.violations] == [("CATALOG_PAGE_SIZE", "invalid_type")]
+    assert [(v.input, v.code) for v in err.violations] == [("CATALOG_PAGE_SIZE", "out_of_range")]
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -61,7 +62,7 @@ def test_out_of_range_int(gateway_root: Path, monkeypatch: pytest.MonkeyPatch) -
 
 def test_int_outside_64_bits(gateway_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GOMEMLIMIT", str(2**63))
-    assert codes(load_error()) == {"GOMEMLIMIT": ["invalid_type"]}
+    assert codes(load_error()) == {"GOMEMLIMIT": ["out_of_range"]}
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-Infinity"])
@@ -123,6 +124,35 @@ def test_list_item_bounds(gateway_root: Path, monkeypatch: pytest.MonkeyPatch) -
     assert codes(load_error()) == {"WORKER_PORTS": ["out_of_range"]}
     monkeypatch.setenv("WORKER_PORTS", "[1,65535]")
     assert docuconf.load(GatewaySettings, watch=False).worker_ports == [1, 65535]
+
+
+def test_malformed_json_is_reported_with_the_rest(gateway_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # pydantic-settings raises on JSON it cannot decode; docuconf reports it and still checks the others.
+    monkeypatch.setenv("WORKER_PORTS", "[8081,")
+    monkeypatch.setenv("RATE_LIMITS", "{perMinute: 60}")
+    monkeypatch.setenv("PORT", "0")
+    assert codes(load_error()) == {
+        "PORT": ["out_of_range"],
+        "RATE_LIMITS": ["invalid_type"],
+        "WORKER_PORTS": ["invalid_type"],
+    }
+    assert os.environ["WORKER_PORTS"] == "[8081,"
+
+
+@pytest.mark.parametrize("value", ['["8081"]', "[8081.0]", "[true]"])
+def test_json_int_list_items_must_be_json_integers(
+    gateway_root: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("WORKER_PORTS", value)
+    assert codes(load_error()) == {"WORKER_PORTS": ["invalid_type"]}
+
+
+def test_list_items_outside_64_bits(gateway_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class S(BaseSettings):
+        ids: Annotated[list[int], NoDecode, Csv()] = Field(default_factory=list, description="Record ids")
+
+    monkeypatch.setenv("IDS", f"1,{2**63}")
+    assert codes(load_error(S)) == {"IDS": ["out_of_range"]}
 
 
 def test_url_needs_scheme(gateway_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:

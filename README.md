@@ -197,8 +197,9 @@ values are replaced on the settings object. Listen with `pair.on_change(callback
 - The message is also written to `/dev/termination-log` when it exists, so `kubectl describe pod` shows it.
   `DOCUCONF_TERMINATION_LOG` overrides the path, and `load(..., termination_log=False)` turns it off.
 - An empty value means *unset* for every type except `string` (SPEC §5): a defaulted variable takes its default, and
-  a required one is `missing_required`. Values are never trimmed. Integers must fit in 64 bits, and floats must be
-  finite.
+  a required one is `missing_required`. Values are never trimmed. Integers, including the items of an `int` list,
+  must fit in 64 bits (`out_of_range` otherwise), and floats must be finite. A `json`-encoded `int` list must hold
+  JSON integers (`[1,2]`, not `["1","2"]`). Malformed JSON is `invalid_type`, reported with every other problem.
 - `DOCUCONF_FILE_ROOT=/some/dir` is prepended to every absolute file path, including paths read from a `path_env`
   variable. Use it for local development and tests.
 - Sources and precedence are pydantic-settings': constructor arguments, then environment variables, then a `.env`
@@ -305,7 +306,7 @@ variable:
 
 ```python
 values = docuconf.load_contract("contract.json")  # or a dict, or JSON text; env= defaults to os.environ
-print(values.PORT, values.TIMEOUT)                # int, timedelta
+print(values.PORT, values.TIMEOUT)  # int, timedelta
 ```
 
 It reads every encoding in SPEC §5: lists as `csv` (with `separator`), `json` or `indexed` (`NAME__0`, `NAME__1`...),

@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import math
-from collections.abc import Mapping
+import os
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 
 from pydantic import ValidationError as PydanticValidationError
-from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource, PydanticBaseSettingsSource
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    EnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsError,
+)
 from typing_extensions import Self
 
 from .declaration import _MISSING, Declaration, VarSpec, declaration
@@ -76,6 +85,26 @@ class Env:
         loaded.update(EnvSettingsSource(cls).env_vars)
         self.values = loaded
 
+    @contextlib.contextmanager
+    def hidden(self, names: set[str]) -> Iterator[None]:
+        """Hide variables from pydantic-settings while the settings class is built.
+
+        pydantic-settings raises (rather than reporting a validation error) when
+        a value it decodes as JSON is malformed. docuconf reports that variable
+        itself, then hides it so every other variable is still checked.
+        """
+        fold = (lambda n: n) if self.case_sensitive else str.lower
+        wanted = {fold(n) for n in names}
+        store: dict[str, str | None] | os._Environ[str] = self.values if self.own else os.environ
+        saved = {k: store[k] for k in list(store) if fold(k) in wanted}
+        for k in saved:
+            del store[k]
+        try:
+            yield
+        finally:
+            for k, v in saved.items():
+                store[k] = v  # type: ignore[assignment]
+
     def __call__(self, name: str) -> str | None:
         return self.values.get(name if self.case_sensitive else name.lower())
 
@@ -102,8 +131,11 @@ def unresolved_reference(raw: str) -> str | None:
     return next((s for s in INJECTOR_SCHEMES if raw.startswith(s)), None)
 
 
-def _precheck(v: VarSpec, raw: str, init: dict[str, Any], out: list[Violation]) -> bool:
-    """SPEC §5 rules the host does not apply. Returns False if the var is handled."""
+def _precheck(v: VarSpec, raw: str, init: dict[str, Any], out: list[Violation], hide: set[str]) -> bool:
+    """SPEC §5 rules the host does not apply. Returns False if the var is handled.
+
+    Adds to ``hide`` the variables pydantic-settings must not see (malformed JSON).
+    """
     if raw == "" and v.type != "string":
         # Empty means unset for every type but string.
         if v.required:
@@ -117,7 +149,7 @@ def _precheck(v: VarSpec, raw: str, init: dict[str, Any], out: list[Violation]) 
         except ValueError:
             return True
         if not INT64_MIN <= n <= INT64_MAX:
-            out.append(Violation(v.name, "var", "invalid_type", "not a 64-bit signed integer"))
+            out.append(Violation(v.name, "var", "out_of_range", "outside the 64-bit signed integer range"))
             return False
     if v.type == "float":
         try:
@@ -126,6 +158,39 @@ def _precheck(v: VarSpec, raw: str, init: dict[str, Any], out: list[Violation]) 
             return True
         if not math.isfinite(f):
             out.append(Violation(v.name, "var", "invalid_type", "must be a finite number"))
+            return False
+    encoding = v.attrs.get("encoding")
+    if v.type == "json" or (v.type == "list" and encoding in ("json", "indexed")):
+        try:
+            data = json.loads(raw, parse_constant=_reject_constant)
+        except ValueError:
+            out.append(Violation(v.name, "var", "invalid_type", "not valid JSON"))
+            hide.update(v.env_names)
+            return False
+        if v.type == "list" and v.attrs.get("items") == "int" and isinstance(data, list):
+            return _check_int_items(v, data, out, strict=encoding == "json")
+    if v.type == "list" and encoding == "csv" and v.attrs.get("items") == "int":
+        return _check_int_items(v, raw.split(v.attrs.get("separator", ",")), out, strict=False)
+    return True
+
+
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _check_int_items(v: VarSpec, items: list[Any], out: list[Violation], *, strict: bool) -> bool:
+    """Items of an int list: JSON integers (``strict``), and within 64 bits (SPEC §5)."""
+    for i, item in enumerate(items):
+        if isinstance(item, str) and not strict:
+            try:
+                item = int(item)
+            except ValueError:
+                continue  # pydantic reports it
+        if not isinstance(item, int) or isinstance(item, bool):
+            out.append(Violation(v.name, "var", "invalid_type", f"item {i} is not an integer"))
+            return False
+        if not INT64_MIN <= item <= INT64_MAX:
+            out.append(Violation(v.name, "var", "out_of_range", f"item {i} is outside the 64-bit signed integer range"))
             return False
     return True
 
@@ -219,12 +284,16 @@ def _precheck_native(v: VarSpec, value: Any, overlay: str, out: list[Violation])
     where = f" (from overlay {overlay})"
     is_int = v.type == "int" and isinstance(value, int) and not isinstance(value, bool)
     if is_int and not INT64_MIN <= value <= INT64_MAX:
-        out.append(Violation(v.name, "var", "invalid_type", "not a 64-bit signed integer" + where))
+        out.append(Violation(v.name, "var", "out_of_range", "outside the 64-bit signed integer range" + where))
         return False
     if v.type == "float" and isinstance(value, float) and not math.isfinite(value):
         out.append(Violation(v.name, "var", "invalid_type", "must be a finite number" + where))
         return False
     return True
+
+
+def _first_line(e: Exception) -> str:
+    return str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
 
 
 def _deprecated(v: VarSpec) -> None:
@@ -248,6 +317,7 @@ def build(
     violations: list[Violation] = []
     kwargs: dict[str, Any] = {}
     skip = set(file_fields)
+    hide: set[str] = set()
 
     overlay_data: list[tuple[str, dict[str, Any]]] = []
     for o in decl.overlays:
@@ -298,17 +368,21 @@ def build(
             )
             skip.add(v.name)
             continue
-        if not _precheck(v, raw, kwargs, violations) and violations and violations[-1].input == v.name:
+        if not _precheck(v, raw, kwargs, violations, hide) and violations and violations[-1].input == v.name:
             skip.add(v.name)
 
     kwargs.update(file_kwargs)
     kwargs.update(init)
     settings: S | None = None
     try:
-        with lenient():
+        with lenient(), env.hidden(hide):
             settings = cls(**kwargs)
     except PydanticValidationError as e:
         violations.extend(_violations_from(decl, e, skip, origin))
+    except SettingsError as e:
+        # A value pydantic-settings could not decode that docuconf did not hide (from a .env file, say).
+        if not violations:
+            violations.append(Violation(cls.__name__, "model", "invalid_type", _first_line(e)))
     if decl.overlays and not is_wired(cls):
         raise DeclarationError(
             [
