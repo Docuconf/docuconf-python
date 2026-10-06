@@ -45,11 +45,13 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pytest PyYAML ruff mypy types-PyYAML
+          python -m pip install -e . pytest PyYAML "ruff==0.16.10" mypy types-PyYAML
           if [ "${{ matrix.deps }}" = minimum ]; then
             python -m pip install "pydantic==2.7.0" "pydantic-settings==2.7.0" "cryptography==42.0.0" "tomli==2.0.1"
           fi
 
+      # ruff is pinned: new releases add rules and formatting changes that would
+      # fail CI without any change here. Bump it deliberately.
       - name: Lint
         if: matrix.deps == 'latest'
         run: |

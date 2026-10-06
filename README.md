@@ -75,7 +75,7 @@ At boot:
 import docuconf
 from orders.settings import Settings
 
-settings = docuconf.load(Settings)           # raises docuconf.ConfigValidationError listing every problem
+settings = docuconf.load(Settings)  # raises docuconf.ConfigValidationError listing every problem
 ssl_context = settings.tls.server_context()  # reloads its certificate when the files rotate
 print(settings.rates.per_minute)
 ```
