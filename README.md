@@ -195,20 +195,108 @@ values are replaced on the settings object. Listen with `pair.on_change(callback
 - `DOCUCONF_FILE_ROOT=/some/dir` is prepended to every absolute file path, including paths read from a `path_env`
   variable. Use it for local development and tests.
 - Sources and precedence are pydantic-settings': constructor arguments, then environment variables, then a `.env`
-  file if you set `env_file` (opt-in; real environment variables win), then defaults. docuconf reads the
-  environment the same way for its own checks.
+  file if you set `env_file` (opt-in; real environment variables win), then config-file overlays, then any config
+  files you add in `settings_customise_sources`, then defaults. docuconf reads the environment the same way for its
+  own checks.
 - Variables not in the declaration are ignored. Setting a deprecated variable logs a warning.
+
+## Config-file overlays
+
+pydantic-settings layers sources through `settings_customise_sources`, including JSON, YAML and TOML files. An
+overlay (SPEC §4.7) is one more such file that the platform mounts from a ConfigMap, between the files the app ships
+with and the environment:
+
+```text
+defaults < baked-in config files < overlay < .env and environment variables < constructor arguments
+```
+
+Declare overlays on the class, and pass your sources through `docuconf.with_overlays`, which inserts pydantic-settings'
+own `JsonConfigSettingsSource`, `YamlConfigSettingsSource` or `TomlConfigSettingsSource` for each overlay just before
+the first config file source (or last, when there is none):
+
+```python
+from collections.abc import Sequence
+from typing import ClassVar
+
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, YamlConfigSettingsSource
+
+import docuconf
+from docuconf import Overlay
+
+
+class Settings(BaseSettings):
+    docuconf_overlays: ClassVar[Sequence[Overlay]] = (
+        Overlay("platform", "/app/config/catalog.json", reload="watch", description="Platform overrides"),
+    )
+    model_config = SettingsConfigDict(env_prefix="CATALOG_", env_nested_delimiter="__")
+    ...
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return docuconf.with_overlays(
+            settings_cls,
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+            YamlConfigSettingsSource(settings_cls, yaml_file="catalog.base.yaml"),  # shipped in the image
+        )
+
+
+settings = docuconf.load(Settings)
+```
+
+Without baked-in files, mixing in `docuconf.DocuconfSettings` does the same with pydantic-settings' default sources.
+
+- **Format**: `json`, `yaml` (needs the `yaml` extra) or `toml`, inferred from the extension or set with `format=`.
+- **Keys**: the file nests values by field path, as pydantic-settings' file sources read them. The contract exports
+  each non-secret variable's `configKey` as that path joined with `.` (field names, or aliases where set), with
+  `keySeparator: "."`: `CATALOG_PAGE_SIZE` is `page_size`, and with `env_nested_delimiter="__"`,
+  `CATALOG_SEARCH__URL` is `search.url`, so the platform writes `{"search": {"url": ...}}`. A nested model without
+  `env_nested_delimiter` is one `json` variable, written as an object at its field name. `Meta(config_key=...)` must
+  match the path when the class declares overlays.
+- **Loading**: the file is optional; a missing one adds nothing. Its values are checked like env values, and
+  violations say `(from overlay platform)`. A malformed file is `file_malformed`, reported with every other problem.
+  A value set both in the environment and in an overlay logs a warning; the environment wins.
+- **`reload="watch"`**: the watcher polls the file (Kubernetes swaps a symlink when a ConfigMap changes). When it
+  changes, docuconf re-validates the whole class through pydantic-settings and replaces the changed fields on the
+  settings object; a reload that fails its checks is logged and the previous values are kept. `on_reload` listeners
+  receive the overlay's name and a dict of the changed fields. Code that copied a value out of the settings object
+  keeps the old one, so read it from the settings object when you need it.
+- **Declaration checks**: `load` raises `DeclarationError` when the class declares overlays but its sources do not go
+  through `with_overlays`, when an environment source comes after a config file source, or when the overlay's
+  directory would hide files the app ships with: the working directory, a baked-in config file's directory, or the
+  module that declares the settings. Mounting the overlay's directory hides whatever the image has there, so give it
+  a directory of its own, such as `/app/config`.
+
+## Injected secrets
+
+Platforms often supply secrets when the container starts rather than in the pod spec: Bank-Vaults' `vault-env`
+resolves `vault:secret/data/db#url`, and wrappers such as `op run` resolve `op://...` references, before the app
+starts. docuconf needs nothing for this: it reads the environment as the process sees it, after injection, validates
+injected values like any other, and never resolves references itself (SPEC §4.5.1).
+
+If the injector did not run, a secret variable still holds the raw reference. docuconf reports a secret whose value
+starts with `vault:`, `op://` or `ref+` as `invalid_type`, naming the variable and the scheme but never the value:
+
+```text
+  - DATABASE_URL [invalid_type]: holds an unresolved vault: reference; the injector that should resolve it did not run
+```
 
 ## Not supported yet
 
 - JKS keystores (PKCS#12 only).
-- Profiles (SPEC §4.4) and the contract-first mode (loading a `contract.cue` at runtime).
+- Profiles (SPEC §4.4) and the contract-first mode (loading a `contract.cue` at runtime). Values in baked-in config
+  files are not exported as defaults, so give fields defaults in Python if the platform need not set them.
 - Markdown documentation generation.
 - `AliasPath` aliases. A nested model without `env_nested_delimiter` is exported as one `json` variable.
-
-Known issue: the meta-schema builds its scheme check as a regular expression without escaping, so a scheme
-containing `+` (such as `postgresql+asyncpg`, which `PostgresDsn` allows) never matches on the platform side. Use
-`Url(schemes=...)` to list only the schemes you deploy with until the spec fixes this.
 
 ## Development
 

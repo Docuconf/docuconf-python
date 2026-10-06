@@ -9,12 +9,13 @@ from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 
 from pydantic import ValidationError as PydanticValidationError
-from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource
+from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource, PydanticBaseSettingsSource
 from typing_extensions import Self
 
 from .declaration import _MISSING, Declaration, VarSpec, declaration
-from .errors import ConfigValidationError, ErrorCode, Violation, write_termination_log
+from .errors import ConfigValidationError, DeclarationError, ErrorCode, Violation, write_termination_log
 from .files import FileResult, load_file
+from .overlays import is_wired, lenient, read_overlay, with_overlays
 
 log = logging.getLogger("docuconf")
 
@@ -77,6 +78,15 @@ def _set_path(d: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
     d[path[-1]] = value
 
 
+#: Reference schemes of injectors that resolve env values when the process starts (SPEC §4.5.1).
+INJECTOR_SCHEMES = ("vault:", "op://", "ref+")
+
+
+def unresolved_reference(raw: str) -> str | None:
+    """The injector scheme ``raw`` starts with, if it is still an unresolved reference."""
+    return next((s for s in INJECTOR_SCHEMES if raw.startswith(s)), None)
+
+
 def _precheck(v: VarSpec, raw: str, init: dict[str, Any], out: list[Violation]) -> bool:
     """SPEC §5 rules the host does not apply. Returns False if the var is handled."""
     if raw == "" and v.type != "string":
@@ -133,7 +143,9 @@ def _message(v: VarSpec | None, err: Mapping[str, Any], nested_loc: tuple[Any, .
     return msg
 
 
-def _violations_from(decl: Declaration, e: PydanticValidationError, skip: set[str]) -> list[Violation]:
+def _violations_from(
+    decl: Declaration, e: PydanticValidationError, skip: set[str], origin: Mapping[str, str]
+) -> list[Violation]:
     out: list[Violation] = []
     seen: set[tuple[str, str]] = set()
     for err in e.errors(include_url=False):
@@ -155,12 +167,142 @@ def _violations_from(decl: Declaration, e: PydanticValidationError, skip: set[st
             if code == "missing_required" and key in seen:
                 continue
             seen.add(key)
-            out.append(Violation(v.name, "var", code, _message(v, err, nested)))
+            msg = _message(v, err, nested)
+            if v.name in origin and code != "missing_required":
+                msg += f" (from overlay {origin[v.name]})"
+            out.append(Violation(v.name, "var", code, msg))
+        elif err["type"] == "missing" and (
+            nested_required := [
+                n
+                for n in decl.vars
+                if n.required and loc and (n.loc[: len(loc)] == loc or n.alias_loc[: len(loc)] == loc)
+            ]
+        ):
+            # A required nested model with env_nested_delimiter: report its variables.
+            for n in nested_required:
+                if n.name not in skip and (n.name, "missing_required") not in seen:
+                    seen.add((n.name, "missing_required"))
+                    out.append(Violation(n.name, "var", "missing_required", "required, but not set"))
         else:
             # A model validator, or a field docuconf does not export (Exclude).
             name = ".".join(loc) or decl.settings_cls.__name__
             out.append(Violation(name, "model", _code(None, err, False), _message(None, err, loc[1:])))
     return out
+
+
+def _lookup(data: Mapping[str, Any], path: tuple[str, ...]) -> tuple[bool, Any]:
+    cur: Any = data
+    for k in path:
+        if not isinstance(cur, Mapping) or k not in cur:
+            return False, None
+        cur = cur[k]
+    return True, cur
+
+
+def _precheck_native(v: VarSpec, value: Any, overlay: str, out: list[Violation]) -> bool:
+    """SPEC §5 number rules for a typed value from an overlay. Returns False if the var is handled."""
+    where = f" (from overlay {overlay})"
+    is_int = v.type == "int" and isinstance(value, int) and not isinstance(value, bool)
+    if is_int and not INT64_MIN <= value <= INT64_MAX:
+        out.append(Violation(v.name, "var", "invalid_type", "not a 64-bit signed integer" + where))
+        return False
+    if v.type == "float" and isinstance(value, float) and not math.isfinite(value):
+        out.append(Violation(v.name, "var", "invalid_type", "must be a finite number" + where))
+        return False
+    return True
+
+
+def _deprecated(v: VarSpec) -> None:
+    if "deprecated" in v.common:
+        dep = v.common["deprecated"]
+        repl = f"; use {dep['replacedBy']}" if "replacedBy" in dep else ""
+        log.warning("docuconf: %s is deprecated: %s%s", v.name, dep["message"], repl)
+
+
+def build(
+    cls: type[S],
+    decl: Declaration,
+    env: Env,
+    file_kwargs: Mapping[str, Any],
+    file_fields: set[str],
+    init: Mapping[str, Any],
+    *,
+    warn: bool = True,
+) -> tuple[S | None, list[Violation]]:
+    """Check the variables and overlays, then instantiate ``cls``; file inputs are already loaded."""
+    violations: list[Violation] = []
+    kwargs: dict[str, Any] = {}
+    skip = set(file_fields)
+
+    overlay_data: list[tuple[str, dict[str, Any]]] = []
+    for o in decl.overlays:
+        data, bad = read_overlay(cls, o)
+        if bad is not None:
+            violations.append(bad)
+        overlay_data.append((o.name, data))
+
+    origin: dict[str, str] = {}
+    for v in decl.vars:
+        raw = env.first(v.env_names)
+        in_overlay = None
+        for name, data in overlay_data:
+            found, value = _lookup(data, v.alias_loc)
+            if found:
+                in_overlay = (name, value)
+                break
+        if raw is None:
+            if in_overlay is None:
+                continue
+            origin[v.name] = in_overlay[0]
+            if warn:
+                _deprecated(v)
+            if not _precheck_native(v, in_overlay[1], in_overlay[0], violations):
+                skip.add(v.name)
+            continue
+        if in_overlay is not None and warn:
+            log.warning(
+                "docuconf: %s is set in the environment and in overlay %s; the environment wins", v.name, in_overlay[0]
+            )
+        if warn:
+            _deprecated(v)
+        if raw == "" and v.type != "string" and in_overlay is not None:
+            # Empty means unset (SPEC §5), so the overlay's value applies.
+            origin[v.name] = in_overlay[0]
+            _set_path(kwargs, v.alias_loc, in_overlay[1])
+            continue
+        scheme = unresolved_reference(raw) if v.secret else None
+        if scheme is not None:
+            # SPEC §11.2: the injector did not run. Name the scheme, never the value.
+            violations.append(
+                Violation(
+                    v.name,
+                    "var",
+                    "invalid_type",
+                    f"holds an unresolved {scheme} reference; the injector that should resolve it did not run",
+                )
+            )
+            skip.add(v.name)
+            continue
+        if not _precheck(v, raw, kwargs, violations) and violations and violations[-1].input == v.name:
+            skip.add(v.name)
+
+    kwargs.update(file_kwargs)
+    kwargs.update(init)
+    settings: S | None = None
+    try:
+        with lenient():
+            settings = cls(**kwargs)
+    except PydanticValidationError as e:
+        violations.extend(_violations_from(decl, e, skip, origin))
+    if decl.overlays and not is_wired(cls):
+        raise DeclarationError(
+            [
+                f"{cls.__name__} declares overlays, but settings_customise_sources does not load them: return "
+                "docuconf.with_overlays(settings_cls, init_settings, env_settings, dotenv_settings, "
+                "file_secret_settings, ...), or mix in docuconf.DocuconfSettings"
+            ]
+        )
+    return settings, violations
 
 
 def load(
@@ -176,12 +318,13 @@ def load(
 
     pydantic-settings loads and parses as usual. docuconf adds the SPEC rules
     the host lacks (empty means unset for non-strings, 64-bit ints, finite
-    floats), reads and checks every file input, and raises one
+    floats, unresolved injector references in secrets), reads and checks every
+    file input and config-file overlay, and raises one
     :class:`ConfigValidationError` listing every violation with its SPEC code.
     The message is also written to ``/dev/termination-log`` when it exists (or
     to ``DOCUCONF_TERMINATION_LOG``); pass ``termination_log=False`` to skip.
 
-    File inputs declared with ``reload="watch"`` are polled every
+    File inputs and overlays declared with ``reload="watch"`` are polled every
     ``watch_interval`` seconds (see :func:`get_watcher`). Extra keyword
     arguments are passed to the settings constructor (they win over the
     environment, as in pydantic-settings).
@@ -191,38 +334,23 @@ def load(
         log.debug("docuconf: %s", w)
     env = Env(cls, decl)
     violations: list[Violation] = []
-    kwargs: dict[str, Any] = {}
-    skip: set[str] = set()
-
-    for v in decl.vars:
-        raw = env.first(v.env_names)
-        if raw is None:
-            continue
-        if "deprecated" in v.common:
-            dep = v.common["deprecated"]
-            repl = f"; use {dep['replacedBy']}" if "replacedBy" in dep else ""
-            log.warning("docuconf: %s is deprecated: %s%s", v.name, dep["message"], repl)
-        if not _precheck(v, raw, kwargs, violations) and violations and violations[-1].input == v.name:
-            skip.add(v.name)
+    file_kwargs: dict[str, Any] = {}
+    file_fields: set[str] = set()
 
     results: list[FileResult] = []
     for f in decl.files:
         r = load_file(f, env, now=now or datetime.now(timezone.utc))
         results.append(r)
         violations.extend(r.violations)
-        skip.add(f.field_name)
-        skip.add(f.init_key)
+        file_fields.add(f.field_name)
+        file_fields.add(f.init_key)
         if r.value is not None:
-            kwargs[f.init_key] = r.value
+            file_kwargs[f.init_key] = r.value
         elif f.py_default is not _MISSING:
-            kwargs[f.init_key] = f.py_default
+            file_kwargs[f.init_key] = f.py_default
 
-    kwargs.update(init)
-    settings: S | None = None
-    try:
-        settings = cls(**kwargs)
-    except PydanticValidationError as e:
-        violations.extend(_violations_from(decl, e, skip))
+    settings, more = build(cls, decl, env, file_kwargs, file_fields, init)
+    violations.extend(more)
 
     if violations or settings is None:
         violations.sort(key=lambda v: (v.kind == "file", v.input))
@@ -231,19 +359,36 @@ def load(
             write_termination_log(str(err), termination_log if isinstance(termination_log, str) else None)
         raise err
 
-    if watch and any(f.marker.reload == "watch" for f in decl.files):
+    if watch and (
+        any(f.marker.reload == "watch" for f in decl.files) or any(o.reload == "watch" for o in decl.overlays)
+    ):
         from .watch import Watcher
 
-        Watcher.start(settings, decl, env, results, interval=watch_interval)
+        Watcher.start(settings, decl, env, results, init=init, interval=watch_interval)
     return settings
 
 
 class DocuconfSettings:
-    """Mixin adding ``Settings.load()``::
+    """Mixin adding ``Settings.load()``, and loading declared overlays::
 
     class Settings(DocuconfSettings, BaseSettings): ...
     settings = Settings.load()
+
+    Its ``settings_customise_sources`` keeps pydantic-settings' default
+    sources and adds the overlays (see :func:`docuconf.with_overlays`).
+    Override it to add baked-in config files.
     """
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return with_overlays(settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings)
 
     @classmethod
     def load(cls, **kwargs: Any) -> Self:

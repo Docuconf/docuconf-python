@@ -63,6 +63,8 @@ addopts = "-ra"
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+# CI checks docuconf-go out here for the meta-schema; it is not this project's code.
+extend-exclude = ["docuconf-go"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]

@@ -147,6 +147,46 @@ def test_secret_values_never_printed(gateway_root: Path, monkeypatch: pytest.Mon
     assert "hunter2" not in log
 
 
+@pytest.mark.parametrize(
+    ("value", "scheme"),
+    [
+        ("vault:secret/data/gateway/db#url-hunter2", "vault:"),
+        ("op://prod/gateway/db-hunter2", "op://"),
+        ("ref+awssm://gateway/db-hunter2", "ref+"),
+    ],
+)
+def test_unresolved_injector_reference(
+    gateway_root: Path, monkeypatch: pytest.MonkeyPatch, value: str, scheme: str
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", value)
+    err = load_error()
+    assert codes(err) == {"DATABASE_URL": ["invalid_type"]}
+    assert str(err.violations[0]) == (
+        f"DATABASE_URL [invalid_type]: holds an unresolved {scheme} reference; "
+        "the injector that should resolve it did not run"
+    )
+    text = str(err) + repr(err.violations)
+    log = Path(str(gateway_root.parent / "termination-log")).read_text()
+    for out in (text, log):
+        assert "hunter2" not in out
+        assert value not in out
+    assert "DATABASE_URL" in log
+
+
+def test_injector_reference_only_flagged_for_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A non-secret variable is checked by its own constraints only.
+    class S(BaseSettings):
+        model_config = SettingsConfigDict(env_prefix="APP_")
+        note: str = Field(description="Free-form note")
+        token: SecretStr = Field(description="Resolved API token")
+
+    monkeypatch.setenv("APP_NOTE", "vault:not-a-reference")
+    monkeypatch.setenv("APP_TOKEN", "s3cr3t-vault:op://")
+    s = docuconf.load(S, watch=False)
+    assert s.note == "vault:not-a-reference"
+    assert s.token.get_secret_value() == "s3cr3t-vault:op://"
+
+
 def test_secret_custom_validator_message_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
     class S(BaseSettings):
         model_config = SettingsConfigDict(env_prefix="APP_")
