@@ -5,19 +5,19 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import sys
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, NoDecode
+from pydantic_settings import NoDecode
 
-import docuconf
-from docuconf import Csv, Url
+from docuconf import Csv, DocuconfSettings, Url
 
 
-class Settings(BaseSettings):
+# DocuconfSettings is pydantic-settings' BaseSettings, whose constructor runs docuconf's checks:
+# Settings() and docuconf.load(Settings) are the same thing.
+class Settings(DocuconfSettings):
     # metadata.name in the exported contract.
     docuconf_service: ClassVar[str] = "orders"
 
@@ -71,12 +71,9 @@ def handler(settings: Settings) -> type[BaseHTTPRequestHandler]:
 
 
 def main() -> None:
-    try:
-        # Reads the environment, checks every rule, and reports all violations at once.
-        settings = docuconf.load(Settings)
-    except docuconf.ConfigValidationError as e:
-        print(e, file=sys.stderr)
-        sys.exit(1)
+    # Reads the environment and checks every rule. On failure it prints every problem at once, writes the
+    # termination log and exits with status 1, without a traceback.
+    settings = Settings.load_or_exit()
     logging.basicConfig(level=settings.log_level.upper())
     server = ThreadingHTTPServer(("", settings.port), handler(settings))
     logging.info("orders listening on :%d", settings.port)

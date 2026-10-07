@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, YamlConfigSettingsSource
 
 import docuconf
-from docuconf import Overlay, Url
+from docuconf import DocuconfSettings, Overlay, Url
 
 #: The file the app ships with, relative to its working directory.
 BASE_FILE = "catalog.base.yaml"
@@ -21,7 +21,7 @@ class Search(BaseModel):
     timeout: timedelta = Field(timedelta(seconds=5), description="Search request timeout")
 
 
-class CatalogSettings(BaseSettings):
+class CatalogSettings(DocuconfSettings):
     docuconf_service: ClassVar[str] = "catalog-api"
     docuconf_overlays: ClassVar[Sequence[Overlay]] = (
         Overlay(

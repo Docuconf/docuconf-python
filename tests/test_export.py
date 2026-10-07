@@ -16,7 +16,7 @@ from pydantic import Field, SecretStr, conint
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 import docuconf
-from docuconf import Csv, DeclarationError, Keystore, KeystoreFile, TextFile, cli
+from docuconf import Csv, DeclarationError, DocuconfSettings, Keystore, KeystoreFile, TextFile, cli
 from docuconf.durations import format_go_duration, parse_go_duration, to_go
 from tests.conftest import find_cue
 from tests.fixtures.sample_settings import GatewaySettings
@@ -134,14 +134,13 @@ def test_console_script(tmp_path: Path) -> None:
 
 
 def problems(cls: type[BaseSettings]) -> str:
-    docuconf.declaration.__globals__["_cache"].pop(cls, None)  # type: ignore[attr-defined]
     with pytest.raises(DeclarationError) as info:
         docuconf.to_contract(cls, name="svc")
     return str(info.value)
 
 
 def test_declaration_errors() -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         # pydantic's default Rust engine already rejects lookaround; python-re does not.
         model_config = SettingsConfigDict(env_prefix="APP_", regex_engine="python-re")
         short: str = Field(description="tiny")
@@ -174,13 +173,13 @@ def test_declaration_errors() -> None:
 
 
 def test_name_rules() -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(case_sensitive=True)
         port: int = Field(8080, description="HTTP listen port")
 
     assert "env name must match" in problems(S)
 
-    class Ok(BaseSettings):
+    class Ok(DocuconfSettings):
         port: int = Field(8080, description="HTTP listen port")
 
     with pytest.raises(DeclarationError):
@@ -188,7 +187,7 @@ def test_name_rules() -> None:
 
 
 def test_path_env_must_not_be_a_var() -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         lic: Annotated[str, TextFile(path="/etc/app/lic/license.key", path_env="LICENSE_FILE")] = Field(
             description="Licence file"
         )
@@ -198,7 +197,7 @@ def test_path_env_must_not_be_a_var() -> None:
 
 
 def test_warnings() -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         enable_checkout: bool = Field(False, description="Deploy-time kill switch")
         hosts: Annotated[list[str], NoDecode] = Field(default_factory=list, description="Hosts, split by a validator")
         ratio: float = Field(0.5, description="Exclusive bound", gt=0)
@@ -210,7 +209,7 @@ def test_warnings() -> None:
 
 
 def test_deprecated_and_examples() -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         db_url: str = Field(
             "postgres://x",
             description="Old database URL",
@@ -236,7 +235,7 @@ def test_durations() -> None:
 
 
 def test_list_item_bounds() -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         shards: list[Annotated[int, Field(ge=0, le=1023)]] = Field(description="Shard ids this instance owns")
         ports: Annotated[list[conint(gt=0, lt=65536)], NoDecode, Csv()] = Field(  # type: ignore[valid-type]
             default_factory=list, description="Ports to probe"

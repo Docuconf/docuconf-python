@@ -9,10 +9,9 @@ from typing import Annotated, Any
 
 import pytest
 from pydantic import Field
-from pydantic_settings import BaseSettings
 
 import docuconf
-from docuconf import ConfigValidationError, DeclarationError, Duration
+from docuconf import ConfigValidationError, DeclarationError, DocuconfSettings, Duration
 
 CONTRACT: dict[str, Any] = {
     "apiVersion": "docuconf.dev/v1alpha1",
@@ -99,7 +98,7 @@ def test_contracts_the_mode_cannot_load() -> None:
     ],
 )
 def test_duration_marker(monkeypatch: pytest.MonkeyPatch, encoding: Any, raw: str, want: timedelta) -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         timeout: Annotated[timedelta, Duration(encoding)] = Field(timedelta(seconds=30), description="Timeout")
 
     assert docuconf.contract_data(S, name="svc")["vars"]["TIMEOUT"] == {

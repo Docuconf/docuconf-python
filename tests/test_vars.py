@@ -11,7 +11,7 @@ from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator,
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 import docuconf
-from docuconf import ConfigValidationError, Csv, Secret, Url
+from docuconf import ConfigValidationError, Csv, DocuconfSettings, Secret, Url
 from tests.fixtures.sample_settings import GatewaySettings, LogLevel
 
 
@@ -148,7 +148,7 @@ def test_json_int_list_items_must_be_json_integers(
 
 
 def test_list_items_outside_64_bits(gateway_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         ids: Annotated[list[int], NoDecode, Csv()] = Field(default_factory=list, description="Record ids")
 
     monkeypatch.setenv("IDS", f"1,{2**63}")
@@ -214,7 +214,7 @@ def test_unresolved_injector_reference(
 
 def test_injector_reference_only_flagged_for_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     # A non-secret variable is checked by its own constraints only.
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(env_prefix="APP_")
         note: str = Field(description="Free-form note")
         token: SecretStr = Field(description="Resolved API token")
@@ -227,7 +227,7 @@ def test_injector_reference_only_flagged_for_secrets(monkeypatch: pytest.MonkeyP
 
 
 def test_secret_custom_validator_message_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(env_prefix="APP_")
         token: SecretStr = Field(description="API token for the upstream")
 
@@ -272,12 +272,13 @@ def test_case_insensitive_names(gateway_root: Path, monkeypatch: pytest.MonkeyPa
     assert docuconf.load(GatewaySettings, watch=False).port == 7000
 
 
+@pytest.mark.filterwarnings("ignore::docuconf.DocuconfWarning")  # the alias warning, expected here
 def test_prefix_alias_and_nested(monkeypatch: pytest.MonkeyPatch) -> None:
     class Db(BaseModel):
         host: str = Field(description="Database host name")
         port: int = Field(5432, description="Database port", ge=1)
 
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(env_prefix="APP_", env_nested_delimiter="__")
         name: str = Field(description="Service display name", validation_alias=AliasChoices("SVC_NAME", "NAME"))
         db: Db = Field(description="Database settings")
@@ -312,7 +313,7 @@ def test_prefix_alias_and_nested(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_model_validator_errors_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(env_prefix="APP_")
         low: int = Field(1, description="Lower bound")
         high: int = Field(2, description="Upper bound")
@@ -333,7 +334,7 @@ def test_dotenv_is_opt_in_and_env_wins(tmp_path: Path, monkeypatch: pytest.Monke
     env_file = tmp_path / ".env"
     env_file.write_text("APP_PORT=\nAPP_NAME=from-dotenv\n")
 
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(env_prefix="APP_", env_file=str(env_file))
         port: int = Field(8080, description="HTTP listen port")
         name: str = Field(description="Service display name")
@@ -345,7 +346,7 @@ def test_dotenv_is_opt_in_and_env_wins(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_mixin(monkeypatch: pytest.MonkeyPatch) -> None:
-    class S(docuconf.DocuconfSettings, BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(env_prefix="APP_")
         port: int = Field(8080, description="HTTP listen port")
 
@@ -353,7 +354,7 @@ def test_mixin(monkeypatch: pytest.MonkeyPatch) -> None:
     assert S.load().port == 1234
 
 
-class Indexed(BaseSettings):
+class Indexed(DocuconfSettings):
     hosts: Annotated[list[str], docuconf.IndexedList()] = Field(["localhost"], description="Hosts to call, in order")
     shards: Annotated[list[int], docuconf.IndexedList()] | None = Field(None, description="Shard ids this owns")
 

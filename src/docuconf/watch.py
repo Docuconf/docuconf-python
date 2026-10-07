@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import weakref
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,7 +60,9 @@ class Watcher:
         results: list[FileResult],
         init: Mapping[str, Any] | None = None,
     ) -> None:
-        self.settings = settings
+        # Weak, so the watcher (and its thread) stops when the settings object is garbage-collected.
+        self._settings = weakref.ref(settings)
+        self._key = id(settings)
         self.decl = decl
         self.env = env
         self.init = dict(init or {})
@@ -74,7 +77,7 @@ class Watcher:
         self._overlays: dict[str, tuple[OverlaySpec, Path, tuple[Any, ...]]] = {}
         for o in decl.overlays:
             if o.reload == "watch":
-                p = overlay_path(o)
+                p = overlay_path(o, env.file_root)
                 self._overlays[o.name] = (o, p, _signature([p]))
 
     @classmethod
@@ -90,10 +93,25 @@ class Watcher:
     ) -> Watcher:
         w = cls(settings, decl, env, results, init)
         _watchers[id(settings)] = w
+        weakref.finalize(settings, w._release)
         t = threading.Thread(target=w._run, args=(interval,), name="docuconf-watch", daemon=True)
         w._thread = t
         t.start()
         return w
+
+    @property
+    def settings(self) -> BaseSettings:
+        """The settings object this watcher updates."""
+        s = self._settings()
+        if s is None:
+            raise RuntimeError("docuconf: the settings object of this watcher was garbage-collected")
+        return s
+
+    def _release(self) -> None:
+        # The settings object is gone: stop polling, without joining (this may run on the watcher thread).
+        self._stop.set()
+        if _watchers.get(self._key) is self:
+            del _watchers[self._key]
 
     @property
     def inputs(self) -> list[str]:
@@ -119,10 +137,13 @@ class Watcher:
         self._stop.set()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=5)
-        _watchers.pop(id(self.settings), None)
+        if _watchers.get(self._key) is self:
+            del _watchers[self._key]
 
     def _run(self, interval: float) -> None:
         while not self._stop.wait(interval):
+            if self._settings() is None:
+                return
             try:
                 self.check_now()
             except Exception:
@@ -156,7 +177,11 @@ class Watcher:
         file_fields = {f.field_name for f in decl.files} | {f.init_key for f in decl.files}
         # File inputs keep their current values; the watcher reloads them on their own.
         file_kwargs = {f.init_key: getattr(self.settings, f.field_name) for f in decl.files}
-        new, violations = build(type(self.settings), decl, self.env, file_kwargs, file_fields, self.init, warn=False)
+        env = self.env
+        if not env.own:
+            # The process environment, as it is now.
+            env = Env(type(self.settings), decl, None, env.file_root)
+        new, violations = build(type(self.settings), decl, env, file_kwargs, file_fields, self.init, warn=False)
         if violations or new is None:
             log.error(
                 "docuconf: keeping the previous values after a failed reload of overlay %s\n%s",
@@ -183,7 +208,7 @@ class Watcher:
             current = _signature(paths)
             if current == sig:
                 continue
-            r = load_file(spec, self.env, now=now or datetime.now(timezone.utc))
+            r = load_file(spec, self.env, now=now or datetime.now(timezone.utc), root=self.env.file_root)
             self._watched[name] = (spec, r.paths, _signature(r.paths))
             if r.violations or r.value is None:
                 log.error(
@@ -207,4 +232,5 @@ class Watcher:
 
 def get_watcher(settings: BaseSettings) -> Watcher | None:
     """The watcher :func:`docuconf.load` started for ``settings``, if any input or overlay uses ``reload="watch"``."""
-    return _watchers.get(id(settings))
+    w = _watchers.get(id(settings))
+    return w if w is not None and w._settings() is settings else None

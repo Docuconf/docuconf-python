@@ -3,10 +3,11 @@
 A tiny service on the standard library's `http.server`, whose configuration is declared with docuconf. It shows
 the three things the Python SDK gives an app:
 
-- a normal [pydantic-settings](https://github.com/pydantic/pydantic-settings) `BaseSettings` class, with docuconf
-  markers only where pydantic has no word for a rule (URL schemes, comma-separated lists)
-  ([`app.py`](app.py));
-- one check at boot, `docuconf.load(Settings)`, that reports every problem at once with stable codes;
+- a normal [pydantic-settings](https://github.com/pydantic/pydantic-settings) settings class (`DocuconfSettings` is
+  a `BaseSettings`), with docuconf markers only where pydantic has no word for a rule (URL schemes,
+  comma-separated lists) ([`app.py`](app.py));
+- one check at boot, `Settings.load_or_exit()`, that reports every problem at once with stable codes and exits 1
+  without a traceback;
 - a CUE contract exported from the class, for the platform to validate before it deploys
   ([`contract.cue`](contract.cue)).
 

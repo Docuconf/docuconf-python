@@ -6,16 +6,19 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
-from cryptography.hazmat.primitives.serialization import pkcs12
+try:  # the optional ``tls`` extra; declaration() rejects TLS, CA and keystore inputs without it
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+    from cryptography.hazmat.primitives.serialization import pkcs12
+except ImportError:  # pragma: no cover - exercised in a subprocess by the tests
+    pass
 from pydantic import StringConstraints, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
@@ -49,15 +52,13 @@ class FileResult:
         self.violations.append(Violation(self.spec.name, "file", code, message))
 
 
-def resolve_path(spec: FileSpec, env: EnvLookup, environ: Mapping[str, str] | None = None) -> Path:
-    """The declared path, or the pathEnv value, under DOCUCONF_FILE_ROOT if set."""
-    environ = os.environ if environ is None else environ
+def resolve_path(spec: FileSpec, env: EnvLookup, root: str | None = None) -> Path:
+    """The declared path, or the pathEnv value, under the file root (``DOCUCONF_FILE_ROOT``) if set."""
     p = spec.marker.path
     if spec.marker.path_env:
         from_env = env(spec.marker.path_env)
         if from_env:
             p = from_env
-    root = environ.get("DOCUCONF_FILE_ROOT")
     if root and os.path.isabs(p):
         return Path(root) / p.lstrip("/")
     return Path(p)
@@ -89,10 +90,25 @@ def _read(r: FileResult, path: Path, label: str, max_size: int | None, *, missin
     return None
 
 
-def load_file(spec: FileSpec, env: EnvLookup, *, now: datetime | None = None) -> FileResult:
-    """Read and check one file input. Never raises for bad content."""
+def missing_hint(spec: FileSpec, root: str | None) -> str:
+    """How to supply a missing file input, for a developer running the app outside the cluster."""
+    m = spec.marker
+    if root:
+        where = f"put it under DOCUCONF_FILE_ROOT={root}"
+    else:
+        where = f"set DOCUCONF_FILE_ROOT to a directory holding {m.path.lstrip('/')} for local development"
+    if m.path_env:
+        return f" (set {m.path_env} to its path, or {where})"
+    return f" ({where})"
+
+
+def load_file(spec: FileSpec, env: EnvLookup, *, now: datetime | None = None, root: str | None = None) -> FileResult:
+    """Read and check one file input. Never raises for bad content.
+
+    ``root`` is the file root (``DOCUCONF_FILE_ROOT``) prepended to absolute paths.
+    """
     r = FileResult(spec)
-    path = resolve_path(spec, env)
+    path = resolve_path(spec, env, root)
     m = spec.marker
     now = now or datetime.now(timezone.utc)
 
@@ -100,7 +116,7 @@ def load_file(spec: FileSpec, env: EnvLookup, *, now: datetime | None = None) ->
         if not path.exists():
             r.paths.append(path / "tls.crt")
             if spec.required:
-                r.fail("file_missing", f"TLS directory not found at {path}")
+                r.fail("file_missing", f"TLS directory not found at {path}{missing_hint(spec, root)}")
             return r
         r.present = True
         _load_tls(r, path, m, now)
@@ -109,7 +125,7 @@ def load_file(spec: FileSpec, env: EnvLookup, *, now: datetime | None = None) ->
     if not path.exists():
         r.paths.append(path)
         if spec.required:
-            r.fail("file_missing", f"not found at {path}")
+            r.fail("file_missing", f"not found at {path}{missing_hint(spec, root)}")
         return r
     r.present = True
 

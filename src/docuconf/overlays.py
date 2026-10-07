@@ -18,7 +18,7 @@ import contextvars
 import os
 import sys
 import weakref
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +32,16 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from . import _context
 from .declaration import OverlaySpec, declaration
 from .errors import DeclarationError, Violation
+
+
+class _Unset:
+    pass
+
+
+_UNSET = _Unset()
 
 _CONFIG_FILE_SOURCES = (JsonConfigSettingsSource, YamlConfigSettingsSource, TomlConfigSettingsSource)
 _FILE_PATH_ATTRS = ("json_file_path", "yaml_file_path", "toml_file_path")
@@ -46,16 +54,15 @@ _wired: weakref.WeakSet[type] = weakref.WeakSet()
 _lenient: contextvars.ContextVar[bool] = contextvars.ContextVar("docuconf_overlays_lenient", default=False)
 
 
-def overlay_path(o: OverlaySpec, environ: Mapping[str, str] | None = None) -> Path:
-    """The overlay's path, under ``DOCUCONF_FILE_ROOT`` if set."""
-    environ = os.environ if environ is None else environ
-    root = environ.get("DOCUCONF_FILE_ROOT")
-    return Path(root) / o.path.lstrip("/") if root else Path(o.path)
+def overlay_path(o: OverlaySpec, root: str | _Unset | None = _UNSET) -> Path:
+    """The overlay's path, under the file root (``DOCUCONF_FILE_ROOT``) if set."""
+    r = _context.file_root() if isinstance(root, _Unset) else root
+    return Path(r) / o.path.lstrip("/") if r else Path(o.path)
 
 
-def _source(settings_cls: type[BaseSettings], o: OverlaySpec) -> PydanticBaseSettingsSource:
+def _source(settings_cls: type[BaseSettings], o: OverlaySpec, path: Path | None = None) -> PydanticBaseSettingsSource:
     """pydantic-settings' own source for the overlay; reads the file (a missing file adds nothing)."""
-    path = overlay_path(o)
+    path = overlay_path(o) if path is None else path
     src: PydanticBaseSettingsSource
     if o.format == "json":
         src = JsonConfigSettingsSource(settings_cls, json_file=path, json_file_encoding="utf-8-sig")
@@ -71,11 +78,13 @@ def _data(src: PydanticBaseSettingsSource, o: OverlaySpec) -> Any:
     return getattr(src, f"{o.format}_data")
 
 
-def read_overlay(settings_cls: type[BaseSettings], o: OverlaySpec) -> tuple[dict[str, Any], Violation | None]:
+def read_overlay(
+    settings_cls: type[BaseSettings], o: OverlaySpec, root: str | None
+) -> tuple[dict[str, Any], Violation | None]:
     """Read an overlay as its source would, turning read and parse errors into violations."""
-    path = overlay_path(o)
+    path = overlay_path(o, root)
     try:
-        data = _data(_source(settings_cls, o), o)
+        data = _data(_source(settings_cls, o, path), o)
     except ImportError as e:
         raise DeclarationError(
             [f"overlay {o.name}: format {o.format} needs {e.name or 'a parser'}; pip install 'docuconf-pydantic[yaml]'"]

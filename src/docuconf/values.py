@@ -8,13 +8,15 @@ import threading
 import weakref
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from cryptography import x509
-from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import core_schema
+
+if TYPE_CHECKING:  # cryptography is the optional ``tls`` extra
+    from cryptography import x509
+    from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
 log = logging.getLogger("docuconf")
 

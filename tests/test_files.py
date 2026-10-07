@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 import docuconf
-from docuconf import CaBundle, ConfigFile, ConfigValidationError, TlsFile, TlsKeyPair
+from docuconf import CaBundle, ConfigFile, ConfigValidationError, DocuconfSettings, TlsFile, TlsKeyPair
 from tests.certs import make_ca, make_leaf, new_key, write_p12, write_tls
 from tests.fixtures.sample_settings import GatewaySettings
 
@@ -223,7 +223,7 @@ def test_text_constraints(gateway_root: Path) -> None:
 def test_binary_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from docuconf import BinaryFile
 
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(env_prefix="APP_")
         blob: Annotated[bytes, BinaryFile(path="/data/blob/blob.bin", max_size=4)] = Field(description="Opaque blob")
 
@@ -248,7 +248,7 @@ def test_toml_and_json_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     class Limits(BaseModel):
         rate: int = Field(ge=1)
 
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(env_prefix="APP_")
         a: Annotated[Limits, ConfigFile(path="/etc/app/a/limits.toml")] = Field(description="Limits as TOML")
         b: Annotated[Limits, ConfigFile(path="/etc/app/b/limits.json")] = Field(description="Limits as JSON")
@@ -304,7 +304,7 @@ def test_watch_reloads_tls_and_config(gateway_root: Path) -> None:
 
 
 def test_tls_directory_not_found_when_optional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(env_prefix="APP_")
         tls: Annotated[TlsKeyPair | None, TlsFile(path="/etc/app/tls")] = Field(None, description="Optional TLS")
 
@@ -315,7 +315,7 @@ def test_tls_directory_not_found_when_optional(tmp_path: Path, monkeypatch: pyte
 def test_p12_without_password(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from docuconf import Keystore, KeystoreFile
 
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         model_config = SettingsConfigDict(env_prefix="APP_")
         ks: Annotated[Keystore, KeystoreFile(path="/etc/app/ks/ks.p12")] = Field(description="Client keystore")
 

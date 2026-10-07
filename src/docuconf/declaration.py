@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 import pydantic_core
-from pydantic import AliasChoices, BaseModel, ConfigDict, SecretStr, TypeAdapter, UrlConstraints
+from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, SecretBytes, SecretStr, TypeAdapter, UrlConstraints
 from pydantic import ValidationError as PydanticValidationError
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, NoDecode
@@ -76,6 +76,39 @@ VarType = Literal["string", "int", "float", "bool", "duration", "url", "enum", "
 FileType = Literal["config", "tls", "caBundle", "keystore", "text", "binary"]
 
 _MISSING: Any = object()
+
+try:  # pydantic >= 2.7
+    from pydantic import Secret as PydanticSecret
+except ImportError:  # pragma: no cover
+    PydanticSecret = None  # type: ignore[assignment,misc]
+
+#: Types whose repr() already hides the value.
+REDACTING_TYPES: tuple[type, ...] = (SecretStr, SecretBytes) + ((PydanticSecret,) if PydanticSecret is not None else ())
+
+TLS_EXTRA_HINT = "needs the cryptography package: pip install 'docuconf-pydantic[tls]'"
+
+
+def _secret_inner(t: Any) -> Any:
+    """For ``pydantic.Secret[T]`` (or a subclass of it), ``T``; otherwise None."""
+    if PydanticSecret is None:  # pragma: no cover
+        return None
+    if get_origin(t) is PydanticSecret:
+        args = get_args(t)
+        return args[0] if args else Any
+    if isinstance(t, type) and get_origin(t) is None and issubclass(t, PydanticSecret):
+        for base in getattr(t, "__orig_bases__", ()):
+            if get_origin(base) is PydanticSecret and get_args(base):
+                return get_args(base)[0]
+        return Any
+    return None
+
+
+def has_cryptography() -> bool:
+    try:
+        import cryptography  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 @dataclass
@@ -185,20 +218,23 @@ class Declaration:
     env_file: Any = None
     overlays: list[OverlaySpec] = field(default_factory=list)
     by_loc: dict[tuple[str, ...], VarSpec] = field(default_factory=dict)
+    #: Settings fields holding a secret, which repr() must not show.
+    secret_fields: frozenset[str] = frozenset()
 
     def var(self, name: str) -> VarSpec | None:
         return next((v for v in self.vars if v.name == name), None)
 
 
-_cache: dict[type, Declaration] = {}
+#: The cached declaration lives on the class itself, so classes built at run time are not kept alive.
+_CACHE_ATTR = "__docuconf_declaration__"
 
 
 def declaration(cls: type[BaseSettings]) -> Declaration:
     """Read and check the declaration of ``cls``; raises :class:`DeclarationError`."""
-    cached = _cache.get(cls)
+    cached: Declaration | None = cls.__dict__.get(_CACHE_ATTR)
     if cached is None:
         cached = _Builder(cls).build()
-        _cache[cls] = cached
+        type.__setattr__(cls, _CACHE_ATTR, cached)
     return cached
 
 
@@ -208,6 +244,10 @@ def kebab(name: str) -> str:
 
 
 def default_service_name(cls: type) -> str | None:
+    """``docuconf_service`` on the class, else the class name in kebab-case without a Settings/Config suffix.
+
+    A class named just ``Settings`` has no name of its own, so this is None.
+    """
     explicit = getattr(cls, "docuconf_service", None)
     if isinstance(explicit, str):
         return explicit
@@ -318,6 +358,18 @@ class _Builder:
         self.overlays: list[OverlaySpec] = []
 
     def build(self) -> Declaration:
+        if not getattr(self.cls, "__docuconf_managed__", False):
+            name = self.cls.__name__
+            self.problems.append(
+                f"{name}: subclass docuconf.DocuconfSettings instead of BaseSettings "
+                f"(class {name}(DocuconfSettings): ...), so that {name}() and docuconf.load({name}) run the same "
+                "checks and read the same file inputs"
+            )
+        if self.cls.model_config.get("extra") == "allow":
+            self.problems.append(
+                f'{self.cls.__name__}: extra="allow" loads environment variables the contract does not list; '
+                'use extra="ignore" (the default) or "forbid"'
+            )
         if self.python_re:
             self.warnings.append(
                 'regex_engine="python-re": patterns are exported as RE2, but Python re semantics '
@@ -343,6 +395,9 @@ class _Builder:
         for v in vars_sorted:
             decl.by_loc[v.loc] = v
             decl.by_loc[v.alias_loc] = v
+        decl.secret_fields = frozenset(
+            {v.loc[0] for v in vars_sorted if v.secret} | {f.field_name for f in self.files if f.secret}
+        )
         return decl
 
     # -- fields -----------------------------------------------------------
@@ -355,6 +410,16 @@ class _Builder:
                 names.append(alias)
             elif isinstance(alias, AliasChoices):
                 names.extend(c for c in alias.choices if isinstance(c, str))
+                if any(isinstance(c, AliasPath) for c in alias.choices):
+                    self.problems.append(
+                        f"{fname}: AliasPath in AliasChoices is not supported, because the contract cannot name the "
+                        "variable it reads; use plain string aliases"
+                    )
+            elif isinstance(alias, AliasPath):
+                self.problems.append(
+                    f"{fname}: validation_alias=AliasPath(...) is not supported, because the contract cannot name "
+                    "the variable it reads; use a string alias"
+                )
         names = list(dict.fromkeys(names))
         if names:
             canonical = fi.alias if isinstance(fi.alias, str) else names[0]
@@ -408,6 +473,14 @@ class _Builder:
                 smeta = list(sfi.metadata) + smeta
                 if _has(smeta, Exclude):
                     continue
+                if _has(smeta, Secret) and not _is_subclass(sann, REDACTING_TYPES) and _secret_inner(sann) is None:
+                    sub_env = (env + self.delim + sub).upper()
+                    self.problems.append(
+                        f"{sub_env} ({'.'.join((*loc, sub))}): Secret() inside the nested model "
+                        f"{ann.__name__} would still print the value in repr(); declare it as SecretStr "
+                        "(or pydantic.Secret[...]) instead"
+                    )
+                    continue
                 skey = sfi.alias if isinstance(sfi.alias, str) else sub
                 self.var(
                     loc=(*loc, sub),
@@ -440,7 +513,12 @@ class _Builder:
                 "flag service (SPEC §10)"
             )
 
-        secret = _is_subclass(ann, SecretStr) or _has(meta, Secret)
+        inner = _secret_inner(ann)
+        secret = _is_subclass(ann, REDACTING_TYPES) or inner is not None or _has(meta, Secret)
+        if inner is not None:
+            # pydantic.Secret[T]: the contract describes T.
+            ann, more, _ = _unwrap(inner)
+            meta = meta + more
         vtype, attrs = self.classify(name, ann, meta, problem)
         if vtype is None:
             return
@@ -493,7 +571,7 @@ class _Builder:
                     problem(f"default {py_default!r} does not satisfy the field's constraints: {msgs}")
                 except Exception as e:  # e.g. a pattern the regex engine rejects
                     problem(f"cannot check the default: {_first_line(e)}")
-                default = self.contract_default(vtype, ann, py_default, problem)
+                default = self.contract_default(vtype, ann, py_default, problem, meta)
         if len(self.problems) > problems_before:
             return
         self.vars.append(
@@ -526,6 +604,20 @@ class _Builder:
                 attrs["schema"] = dict(jv.schema)
             return "json", attrs
         url = _first(meta, Url)
+        if url is not None and not (_is_subclass(ann, (str, SecretStr, *_URL_TYPES)) or ann is Any):
+            problem(f"Url() applies to str, SecretStr or AnyUrl fields, not {getattr(ann, '__name__', ann)}")
+            return None, attrs
+        if _has(meta, Duration) and not _is_subclass(ann, timedelta):
+            problem(f"Duration() applies to timedelta fields, not {getattr(ann, '__name__', ann)}")
+            return None, attrs
+        origin0 = get_origin(ann)
+        is_list = origin0 in (list, tuple, set, frozenset) or (
+            origin0 is not None and _is_subclass(origin0, typing.Sequence) and not _is_subclass(origin0, str)
+        )
+        for marker, label in ((Csv, "Csv()"), (IndexedList, "IndexedList()"), (NoDecode, "NoDecode")):
+            if _has(meta, marker) and not is_list:
+                problem(f"{label} applies to list fields, not {getattr(ann, '__name__', ann)}")
+                return None, attrs
         if url is not None or _is_subclass(ann, _URL_TYPES):
             schemes: list[str] = []
             if url is not None:
@@ -577,7 +669,8 @@ class _Builder:
                 items = None
             elif _is_subclass(item, int) and not _is_subclass(item, enum.Enum):
                 items = "int"
-            elif _is_subclass(item, str) or _str_values(item) is not None:
+            elif _is_subclass(item, str) or _str_values(item) is not None or isinstance(item, typing.TypeVar):
+                # A TypeVar is docuconf.CsvList used without a parameter: pydantic reads str items.
                 items = "string"
             if items is not None:
                 attrs["items"] = items
@@ -642,10 +735,19 @@ class _Builder:
         if hi is not None:
             attrs["max"] = conv(hi)
 
-    def contract_default(self, vtype: str, ann: Any, value: Any, problem: Any) -> Any:
+    def contract_default(self, vtype: str, ann: Any, value: Any, problem: Any, meta: Sequence[Any] = ()) -> Any:
         if isinstance(value, enum.Enum):
             value = value.value
         if vtype == "duration":
+            if isinstance(value, str):
+                # A default written as the env value would be (PT30S, or 30s with Duration("go")).
+                enc = [m for m in meta if isinstance(m, Duration)]
+                target: Any = Annotated[timedelta, enc[-1]] if enc else timedelta
+                try:
+                    value = TypeAdapter(target).validate_python(value)
+                except PydanticValidationError:
+                    problem(f"default {value!r} is not a duration in this field's encoding")
+                    return _MISSING
             if not isinstance(value, timedelta) or value < timedelta(0):
                 problem("a duration default must be a non-negative timedelta")
                 return _MISSING
@@ -694,6 +796,8 @@ class _Builder:
         adapter: TypeAdapter[Any] | None = None
         min_ns: int | None = None
         expect: tuple[type, ...] | None = None
+        if isinstance(marker, (TlsFile, CaBundleFile, KeystoreFile)) and not has_cryptography():
+            problem(f"{type(marker).__name__} {TLS_EXTRA_HINT}")
         if isinstance(marker, ConfigFile):
             ftype = "config"
             fmt = marker.format
