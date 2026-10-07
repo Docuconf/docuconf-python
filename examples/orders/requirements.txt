@@ -1,0 +1,2 @@
+# The SDK from this repository, not a published release.
+-e ../..

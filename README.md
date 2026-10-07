@@ -2,6 +2,8 @@
 
 Typed configuration contracts for [pydantic-settings](https://github.com/pydantic/pydantic-settings).
 
+**Example:** [`examples/orders/`](examples/orders/), a small `http.server` service with its exported contract.
+
 [docuconf](https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md) treats an application's configuration
 (environment variables, config files, TLS certificates, CA bundles, keystores) as an API between the app and the
 Kubernetes platform that runs it. This package lets a Python service:
