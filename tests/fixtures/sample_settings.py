@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PostgresDsn, SecretStr
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import NoDecode, SettingsConfigDict
 
 from docuconf import (
     BinaryFile,
@@ -16,6 +16,7 @@ from docuconf import (
     CaBundleFile,
     ConfigFile,
     Csv,
+    DocuconfSettings,
     Keystore,
     KeystoreFile,
     Meta,
@@ -54,7 +55,7 @@ class Routes(BaseModel):
     routes: list[Route] = Field(min_length=1)
 
 
-class GatewaySettings(BaseSettings):
+class GatewaySettings(DocuconfSettings):
     docuconf_service: ClassVar[str] = "sample-gateway"
     model_config = SettingsConfigDict(env_prefix="")
 

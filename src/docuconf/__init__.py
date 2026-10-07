@@ -9,14 +9,15 @@ overlays at boot.
 from ._version import __version__
 from .contract import ContractSettings, contract_settings, load_contract
 from .declaration import Declaration, declaration
-from .errors import ERROR_CODES, ConfigValidationError, DeclarationError, DocuconfError, Violation
+from .errors import ERROR_CODES, ConfigValidationError, DeclarationError, DocuconfError, DocuconfWarning, Violation
 from .export import contract_data, to_contract
-from .loader import DocuconfSettings, load
+from .loader import DocuconfSettings, load, load_or_exit
 from .markers import (
     BinaryFile,
     CaBundleFile,
     ConfigFile,
     Csv,
+    CsvList,
     Duration,
     Exclude,
     IndexedList,
@@ -41,10 +42,12 @@ __all__ = [
     "ConfigValidationError",
     "ContractSettings",
     "Csv",
+    "CsvList",
     "Declaration",
     "DeclarationError",
     "DocuconfError",
     "DocuconfSettings",
+    "DocuconfWarning",
     "Duration",
     "Exclude",
     "IndexedList",
@@ -65,6 +68,7 @@ __all__ = [
     "declaration",
     "get_watcher",
     "load",
+    "load_or_exit",
     "load_contract",
     "to_contract",
     "with_overlays",

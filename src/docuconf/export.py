@@ -22,10 +22,17 @@ def contract_data(
     """The contract as plain data (what ``cue export`` would produce)."""
     decl = declaration(cls)
     service = name or decl.service
-    if not service or not SERVICE_NAME.match(service):
+    if not service:
         raise DeclarationError(
             [
-                f"service name {service!r} must be a DNS label; pass name= or set "
+                f"{cls.__name__} has no service name (a class named just Settings has none of its own); pass name= "
+                f'or set docuconf_service: ClassVar[str] = "my-service" on the settings class'
+            ]
+        )
+    if not SERVICE_NAME.match(service):
+        raise DeclarationError(
+            [
+                f"service name {service!r} must be a DNS label (lower case, digits and -); pass name= or set "
                 "docuconf_service: ClassVar[str] on the settings class"
             ]
         )

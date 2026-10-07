@@ -94,7 +94,7 @@ def test_config_key_follows_aliases() -> None:
     class Db(BaseModel):
         host: str = Field("db", description="Database host", alias="Host")
 
-    class S(BaseSettings):
+    class S(DocuconfSettings):
         docuconf_overlays: ClassVar[Sequence[Overlay]] = (Overlay("platform", "/etc/svc/config/overlay.toml"),)
         model_config = SettingsConfigDict(env_prefix="SVC_", env_nested_delimiter="__")
         port: int = Field(8080, description="HTTP port", alias="SVC_HTTP_PORT")
@@ -210,7 +210,7 @@ def test_yaml_and_toml_overlays(app: Path, cls: type[CatalogSettings], content: 
 
 
 def test_mixin_loads_overlays_with_default_sources(app: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    class Svc(DocuconfSettings, BaseSettings):
+    class Svc(DocuconfSettings):
         docuconf_overlays: ClassVar[Sequence[Overlay]] = (Overlay("platform", "/app/config/catalog.json"),)
         model_config = SettingsConfigDict(env_prefix="CATALOG_")
         page_size: int = Field(20, description="Items per page")
@@ -226,10 +226,21 @@ def test_mixin_loads_overlays_with_default_sources(app: Path, monkeypatch: pytes
 
 
 def test_overlays_must_be_wired_into_the_sources(app: Path) -> None:
-    class Svc(BaseSettings):
+    class Svc(DocuconfSettings):
         docuconf_overlays: ClassVar[Sequence[Overlay]] = (Overlay("platform", "/app/config/catalog.json"),)
         model_config = SettingsConfigDict(env_prefix="CATALOG_")
         page_size: int = Field(20, description="Items per page")
+
+        @classmethod
+        def settings_customise_sources(
+            cls,
+            settings_cls: type[BaseSettings],
+            init_settings: PydanticBaseSettingsSource,
+            env_settings: PydanticBaseSettingsSource,
+            dotenv_settings: PydanticBaseSettingsSource,
+            file_secret_settings: PydanticBaseSettingsSource,
+        ) -> tuple[PydanticBaseSettingsSource, ...]:
+            return (init_settings, env_settings)  # forgets the overlays
 
     with pytest.raises(DeclarationError, match="settings_customise_sources does not load them"):
         docuconf.load(Svc, watch=False)
@@ -242,14 +253,14 @@ def test_overlay_must_not_hide_shipped_files(tmp_path: Path, monkeypatch: pytest
     monkeypatch.delenv("DOCUCONF_FILE_ROOT", raising=False)
     (tmp_path / "config").mkdir()
 
-    class InWorkdir(DocuconfSettings, BaseSettings):
+    class InWorkdir(DocuconfSettings):
         docuconf_overlays: ClassVar[Sequence[Overlay]] = (Overlay("platform", f"{tmp_path}/overlay.json"),)
         page_size: int = Field(20, description="Items per page")
 
     with pytest.raises(DeclarationError, match="working directory"):
         docuconf.load(InWorkdir, watch=False)
 
-    class OverBakedIn(BaseSettings):
+    class OverBakedIn(DocuconfSettings):
         docuconf_overlays: ClassVar[Sequence[Overlay]] = (Overlay("platform", f"{tmp_path}/config/overlay.json"),)
         page_size: int = Field(20, description="Items per page")
 
@@ -273,7 +284,7 @@ def test_overlay_must_not_hide_shipped_files(tmp_path: Path, monkeypatch: pytest
 def test_environment_must_come_before_baked_in_files(app: Path) -> None:
     from pydantic_settings import JsonConfigSettingsSource
 
-    class Svc(BaseSettings):
+    class Svc(DocuconfSettings):
         docuconf_overlays: ClassVar[Sequence[Overlay]] = (Overlay("platform", "/app/config/catalog.json"),)
         page_size: int = Field(20, description="Items per page")
 

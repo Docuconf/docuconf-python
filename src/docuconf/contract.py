@@ -13,15 +13,15 @@ import os
 from collections.abc import Mapping
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal, Optional, cast
+from typing import Annotated, Any, ClassVar, Literal, Optional
 
 from pydantic import Field, create_model
-from pydantic_settings import BaseSettings, EnvSettingsSource, NoDecode, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, PydanticBaseSettingsSource, SettingsConfigDict
 
 from . import durations
-from .declaration import _Builder
+from .declaration import declaration
 from .errors import ConfigValidationError, DeclarationError, write_termination_log
-from .loader import Env, build
+from .loader import ActiveEnvSource, Env, _RedactSecrets, build
 from .markers import Csv, Duration, IndexedList, JsonValue, Secret, Url, schema_validator
 from .re2 import non_re2_feature
 
@@ -29,19 +29,14 @@ API_VERSION = "docuconf.dev/v1alpha1"
 _VAR_TYPES = ("string", "int", "float", "bool", "duration", "url", "enum", "list", "json")
 
 
-class _MappingEnvSource(EnvSettingsSource):
-    """pydantic-settings' environment source, reading the contract-first environment instead of ``os.environ``."""
+class ContractSettings(_RedactSecrets, BaseSettings):
+    """Base of the settings classes :func:`load_contract` builds: one field per variable, named as the variable.
 
-    def _load_env_vars(self) -> Mapping[str, str | None]:
-        settings_cls = cast("type[ContractSettings]", self.settings_cls)
-        return dict(settings_cls._docuconf_env.values)
-
-
-class ContractSettings(BaseSettings):
-    """Base of the settings classes :func:`load_contract` builds: one field per variable, named as the variable."""
+    ``repr()`` shows secret variables as ``'**********'``.
+    """
 
     model_config = SettingsConfigDict(case_sensitive=True, extra="ignore")
-    _docuconf_env: ClassVar[Env]
+    __docuconf_managed__: ClassVar[bool] = True
 
     @classmethod
     def settings_customise_sources(
@@ -52,7 +47,8 @@ class ContractSettings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (init_settings, _MappingEnvSource(settings_cls, case_sensitive=True))
+        # Reads the environment load_contract was given, never os.environ.
+        return (init_settings, ActiveEnvSource(settings_cls, case_sensitive=True))
 
 
 def _read(contract: Mapping[str, Any] | str | os.PathLike[str]) -> Mapping[str, Any]:
@@ -243,9 +239,8 @@ def load_contract(
     the termination log as :func:`docuconf.load` does.
     """
     cls = contract_settings(contract)
-    decl = _Builder(cls).build()
+    decl = declaration(cls)
     environment = Env(cls, decl, dict(os.environ if env is None else env))
-    cls._docuconf_env = environment
     settings, violations = build(cls, decl, environment, {}, set(), {})
     if violations or settings is None:
         violations.sort(key=lambda v: v.input)

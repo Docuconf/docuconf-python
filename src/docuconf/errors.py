@@ -78,6 +78,13 @@ class DocuconfError(Exception):
     """Base class for docuconf errors."""
 
 
+class DocuconfWarning(UserWarning):
+    """Warnings docuconf issues at boot: declaration warnings, and set variables that look like typos.
+
+    Filter them like any warning, e.g. ``warnings.simplefilter("error", docuconf.DocuconfWarning)`` in tests.
+    """
+
+
 class ConfigValidationError(DocuconfError):
     """Raised by :func:`docuconf.load` when the environment or a file input is invalid.
 

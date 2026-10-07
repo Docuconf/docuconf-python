@@ -16,10 +16,11 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, TypeVar
 
-from pydantic import GetCoreSchemaHandler, SecretStr
+from pydantic import GetCoreSchemaHandler
 from pydantic_core import PydanticCustomError, core_schema
+from pydantic_settings import NoDecode
 
 from . import durations
 
@@ -30,10 +31,13 @@ _URL = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+$")
 
 @dataclass(frozen=True)
 class Secret:
-    """Mark a field as secret (SPEC §6) when its type is not ``SecretStr``.
+    """Mark a field as secret (SPEC §6) when its type is not ``SecretStr`` or ``pydantic.Secret[T]``.
 
     The platform must supply it from a Secret, and docuconf never prints its
-    value. Prefer ``SecretStr``, which also keeps the value out of ``repr``.
+    value: ``DocuconfSettings`` shows it as ``'**********'`` in ``repr()`` and
+    ``str()``, and boot errors never contain it. ``model_dump()`` still returns
+    the value, so prefer ``SecretStr`` or ``pydantic.Secret[T]`` for values you
+    serialise. Inside a nested model, ``Secret()`` is a declaration error.
     """
 
 
@@ -71,7 +75,7 @@ class Url:
         def check(v: Any) -> Any:
             if v is None:
                 return v
-            s = v.get_secret_value() if isinstance(v, SecretStr) else str(v)
+            s = str(v.get_secret_value()) if hasattr(v, "get_secret_value") else str(v)
             if not _URL.match(s):
                 raise PydanticCustomError("url_parsing", "Input should be a URL of the form scheme://...")
             scheme = s.split("://", 1)[0].lower()
@@ -110,6 +114,13 @@ class Csv:
             return v
 
         return core_schema.no_info_before_validator_function(split, handler(source))
+
+
+_T = TypeVar("_T")
+
+#: A comma-separated list variable: ``CsvList[str]`` or ``CsvList[int]``.
+#: Short for ``Annotated[list[T], NoDecode, Csv()]``; use that form for another separator.
+CsvList = Annotated[list[_T], NoDecode, Csv()]
 
 
 @dataclass(frozen=True)
@@ -232,7 +243,7 @@ class FileInput:
     path: str
     #: Input name (a DNS label). Defaults to the field name in kebab-case.
     name: str | None = None
-    #: An environment variable the platform sets to ``path``.
+    #: An environment variable the platform sets to ``path`` (``pathEnv`` in the contract).
     path_env: str | None = None
     #: ``restart`` (read once) or ``watch`` (docuconf reloads it; see ``docuconf.get_watcher``).
     reload: Reload = "restart"
@@ -241,6 +252,14 @@ class FileInput:
     #: Defaults to whether the pydantic field is required.
     required: bool | None = None
     group: str | None = None
+    #: Alias of ``path_env``, named like pydantic-settings' own options.
+    env: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.env is not None:
+            if self.path_env is not None and self.path_env != self.env:
+                raise TypeError(f"{type(self).__name__}: env= and path_env= name the same thing; pass one of them")
+            object.__setattr__(self, "path_env", self.env)
 
 
 @dataclass(frozen=True)
@@ -339,6 +358,7 @@ __all__ = [
     "CaBundleFile",
     "ConfigFile",
     "Csv",
+    "CsvList",
     "Duration",
     "Exclude",
     "FileInput",

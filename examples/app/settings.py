@@ -6,9 +6,9 @@ from datetime import timedelta
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, Field, SecretStr
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import NoDecode, SettingsConfigDict
 
-from docuconf import ConfigFile, Csv, TlsFile, TlsKeyPair, Url
+from docuconf import ConfigFile, Csv, DocuconfSettings, TlsFile, TlsKeyPair, Url
 
 
 class Rates(BaseModel):
@@ -16,7 +16,7 @@ class Rates(BaseModel):
     burst: int = Field(0, ge=0)
 
 
-class Settings(BaseSettings):
+class Settings(DocuconfSettings):
     docuconf_service: ClassVar[str] = "orders"
     model_config = SettingsConfigDict(env_prefix="ORDERS_")
 
