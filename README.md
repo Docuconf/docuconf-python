@@ -66,6 +66,42 @@ Every variable needs a description of at least 5 characters. Mistakes in the dec
 bounds, `Url()` on an `int`, a secret with a default...) raise `docuconf.DeclarationError` naming the variable and
 the fix, at the latest when the class is first loaded or exported.
 
+### Descriptions and details
+
+The contract's `description` is a one-line summary; `details` is optional CommonMark (at most 4000 characters) for
+why the input exists and when to change it. Write the details as the field's attribute docstring, the string on the
+line after it:
+
+```python
+class Settings(DocuconfSettings):
+    timeout: timedelta = Field(timedelta(seconds=30), description="Upstream timeout")
+    """Raise it for batch clients.
+
+    Keep it below the load balancer's idle timeout, or clients see a reset rather than a ``504``.
+    """
+
+    region: str = "eu-west-1"
+    """Cloud region for object storage.
+
+    Change it together with the bucket: ``eu-west-1`` or ``us-east-1``.
+    """
+
+    workers: int = Field(4, description="Worker processes", json_schema_extra={"details": "One per core."})
+```
+
+- With `Field(description=...)`, the whole docstring is the details.
+- Without one, the docstring's first paragraph is the description (on one line, without a final period) and the
+  rest is the details, as with `use_attribute_docstrings=True`.
+- `Field(json_schema_extra={"details": "..."})` sets the details explicitly, for a class whose source is not
+  available.
+- reStructuredText in docstrings becomes CommonMark: double-backquoted literals and Sphinx roles (`:class:`,
+  `:meth:`...) become code spans, `::` and `.. code-block::` blocks become fenced code, and field lists
+  (`:param x:`) are dropped.
+
+Export fails when an input has no description, or details that are blank or longer than 4000 characters. Details
+are for docs only and never read at runtime. `docuconf docs` in the [docuconf CLI](https://github.com/docuconf/docuconf-go)
+generates `CONFIG.md` and `CONFIG.agents.md` from the exported contract.
+
 ## 3. Run
 
 Load the settings at the entry point:

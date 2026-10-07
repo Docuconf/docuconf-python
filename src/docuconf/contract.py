@@ -176,9 +176,11 @@ def _field(name: str, var: Mapping[str, Any], problems: list[str]) -> tuple[Any,
     if outer:
         ann = Annotated[_params(ann, outer)]
     description = var.get("description", "")
+    # details are docs only (SPEC §4.2): checked like a declaration's, never read at runtime.
+    extra = {"details": var["details"]} if var.get("details") is not None else None
     if required:
-        return ann, Field(description=description)
-    return ann, Field(default, description=description, validate_default=validate_default)
+        return ann, Field(description=description, json_schema_extra=extra)
+    return ann, Field(default, description=description, validate_default=validate_default, json_schema_extra=extra)
 
 
 def _params(base: Any, metadata: list[Any]) -> Any:

@@ -28,7 +28,7 @@ from pydantic import ValidationError as PydanticValidationError
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, NoDecode
 
-from . import durations
+from . import docs, durations
 from .errors import DeclarationError
 from .markers import (
     FILE_MARKERS,
@@ -120,6 +120,8 @@ class VarSpec:
     name: str
     type: VarType
     description: str
+    #: CommonMark for docs only (SPEC §4.2); never read at runtime.
+    details: str | None
     required: bool
     secret: bool
     #: Contract fields after the common ones, in output order (without default).
@@ -139,6 +141,8 @@ class VarSpec:
 
     def contract(self) -> dict[str, Any]:
         out: dict[str, Any] = {"type": self.type, "description": self.description}
+        if self.details is not None:
+            out["details"] = self.details
         if self.required:
             out["required"] = True
         if self.secret:
@@ -160,6 +164,7 @@ class FileSpec:
     field_name: str
     init_key: str
     description: str
+    details: str | None
     required: bool
     secret: bool
     #: The field's (unwrapped) type: the model a config file binds to, ``str``, ``bytes``, ``Path``...
@@ -450,6 +455,7 @@ class _Builder:
             meta=meta,
             required=fi.is_required(),
             full_annotation=fi.annotation,
+            owner=self.cls,
         )
 
     def var(
@@ -464,6 +470,7 @@ class _Builder:
         meta: list[Any],
         required: bool,
         full_annotation: Any,
+        owner: type,
     ) -> None:
         name = env if self.case_sensitive else env.upper()
         where = ".".join(loc)
@@ -494,6 +501,7 @@ class _Builder:
                     meta=smeta,
                     required=required and sfi.is_required(),
                     full_annotation=sfi.annotation,
+                    owner=ann,
                 )
             return
 
@@ -506,9 +514,8 @@ class _Builder:
             problem(
                 f"env name must match {ENV_NAME.pattern}" + (" (case_sensitive=True)" if self.case_sensitive else "")
             )
-        description = (fi.description or "").strip()
-        if len(description) < 5:
-            problem('needs a description of at least 5 characters: Field(description="...")')
+        description, details = docs.describe(fi, docs.attribute_docstring(owner, loc[-1]))
+        docs.check(description, details, problem)
         if FEATURE_FLAG.match(name):
             self.warnings.append(
                 f"{name}: looks like a feature flag; flags that change without a rollout belong in a "
@@ -588,6 +595,7 @@ class _Builder:
                 name=name,
                 type=vtype,
                 description=description,
+                details=details,
                 required=required,
                 secret=secret,
                 attrs=attrs,
@@ -810,9 +818,8 @@ class _Builder:
 
         if not INPUT_NAME.match(name):
             problem(f"input name must be a DNS label matching {INPUT_NAME.pattern}")
-        description = (fi.description or "").strip()
-        if len(description) < 5:
-            problem('needs a description of at least 5 characters: Field(description="...")')
+        description, details = docs.describe(fi, docs.attribute_docstring(self.cls, fname))
+        docs.check(description, details, problem)
         path = marker.path
         if bad_path(path):
             problem(f"path {path!r} must be absolute and normalised")
@@ -910,6 +917,8 @@ class _Builder:
         if fmt is not None:
             out["format"] = fmt
         out["description"] = description
+        if details is not None:
+            out["details"] = details
         if required:
             out["required"] = True
         if secret:
@@ -938,6 +947,7 @@ class _Builder:
                 field_name=fname,
                 init_key=init_key,
                 description=description,
+                details=details,
                 required=required,
                 secret=secret,
                 value_type=ann,
