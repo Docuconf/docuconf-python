@@ -107,9 +107,6 @@ jobs:
             build(deps): bump docuconf-go to ${{ steps.target.outputs.short }}
 
             Points .github/docuconf-go.ref at docuconf-go ${{ steps.target.outputs.target }}.
-
-            Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-            Claude-Session: https://claude.ai/code/session_018zU6RpCNM51CvRfBVoE46H
           body: |
             Bumps docuconf-go from `${{ steps.target.outputs.current }}` to `${{ steps.target.outputs.target }}`.
 
