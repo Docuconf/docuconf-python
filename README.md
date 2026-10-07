@@ -2,6 +2,8 @@
 
 Typed configuration contracts for [pydantic-settings](https://github.com/pydantic/pydantic-settings).
 
+**Example:** [`examples/orders/`](examples/orders/), a small `http.server` service with its exported contract.
+
 [docuconf](https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md) treats an application's configuration
 (environment variables, config files, TLS certificates, CA bundles, keystores) as an API between the app and the
 Kubernetes platform that runs it. This package lets a Python service:
@@ -117,6 +119,7 @@ adds `Settings.load()`.
 | `list[str]`, `list[int]` (`min_length`, `max_length`) | `list` (`minItems`, `maxItems`), `encoding: "json"` |
 | `list[Annotated[int, Field(ge=0, le=1023)]]`, `list[conint(ge=0)]` | `list` of `int` with `itemMin`, `itemMax` |
 | `Annotated[list[str], NoDecode, Csv(";")]` | `list`, `encoding: "csv"`, `separator: ";"` |
+| `Annotated[list[str], IndexedList()]` | `list`, `encoding: "indexed"` (`NAME__0`, `NAME__1`...) |
 | a model, a `dict`, a list of models... | `json`, with `schema` from pydantic's JSON Schema |
 | a nested model with `env_nested_delimiter` | one variable per field, e.g. `APP_DB__HOST` |
 | `SecretStr`, or `Annotated[T, Secret()]` | `secret: true` |
@@ -136,7 +139,10 @@ added on its own.
 
 **Encodings** (SPEC §5) are the ones pydantic-settings parses natively: lists as JSON (`["a","b"]`) unless the field
 uses `NoDecode` with `docuconf.Csv`, and durations as ISO 8601 (`PT90S`) unless the field carries
-`docuconf.Duration("go")` (`1m30s`), `Duration("seconds")` (`90`) or `Duration("timespan")` (`00:01:30`). Platform authors still write `"90s"` and
+`docuconf.Duration("go")` (`1m30s`), `Duration("seconds")` (`90`) or `Duration("timespan")` (`00:01:30`). A list
+marked `docuconf.IndexedList()` is read from `NAME__0`, `NAME__1`..., which pydantic-settings cannot do, so docuconf
+gathers the items itself; they must be numbered from 0 with no gap (`NAME__0` and `NAME__2` without `NAME__1` is
+`invalid_type`), and other suffixes such as `NAME__HOST` are not items. Platform authors still write `"90s"` and
 `["a", "b"]`; the platform's renderer converts. Duration defaults and bounds are exported in canonical Go form
 (`1h30m`).
 
@@ -309,8 +315,8 @@ values = docuconf.load_contract("contract.json")  # or a dict, or JSON text; env
 print(values.PORT, values.TIMEOUT)  # int, timedelta
 ```
 
-It reads every encoding in SPEC §5: lists as `csv` (with `separator`), `json` or `indexed` (`NAME__0`, `NAME__1`...),
-and durations as `go`, `iso8601`, `seconds` or `timespan`. docuconf builds a pydantic-settings class from the
+It reads every encoding in SPEC §5: lists as `csv` (with `separator`), `json` or `indexed` (`NAME__0`, `NAME__1`...,
+numbered from 0 with no gap), and durations as `go`, `iso8601`, `seconds` or `timespan`. docuconf builds a pydantic-settings class from the
 contract (`docuconf.contract_settings`) with the same constraints and markers a hand-written declaration would use,
 and loads it through the same checks as `docuconf.load`, so the two modes cannot drift apart. Violations raise
 `ConfigValidationError` and go to the termination log as usual. `json` variables are checked against their `schema`

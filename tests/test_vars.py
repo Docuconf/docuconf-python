@@ -351,3 +351,37 @@ def test_mixin(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setenv("APP_PORT", "1234")
     assert S.load().port == 1234
+
+
+class Indexed(BaseSettings):
+    hosts: Annotated[list[str], docuconf.IndexedList()] = Field(["localhost"], description="Hosts to call, in order")
+    shards: Annotated[list[int], docuconf.IndexedList()] | None = Field(None, description="Shard ids this owns")
+
+
+def test_indexed_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOSTS__1", "b")
+    monkeypatch.setenv("HOSTS__0", "a")
+    monkeypatch.setenv("HOSTS__HOST", "not an item")
+    monkeypatch.setenv("HOSTS", "not the list either")
+    monkeypatch.setenv("SHARDS__0", "3")
+    s = docuconf.load(Indexed, watch=False)
+    assert (s.hosts, s.shards) == (["a", "b"], [3])
+    assert docuconf.contract_data(Indexed)["vars"]["HOSTS"]["encoding"] == "indexed"
+
+
+def test_indexed_list_absent_takes_its_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOSTS__01", "a leading zero is not an index")
+    s = docuconf.load(Indexed, watch=False)
+    assert (s.hosts, s.shards) == (["localhost"], None)
+
+
+@pytest.mark.parametrize(
+    ("env", "missing"), [({"HOSTS__0": "a", "HOSTS__2": "c"}, "HOSTS__1"), ({"HOSTS__1": "b"}, "HOSTS__0")]
+)
+def test_indexed_list_gaps(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], missing: str) -> None:
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("SHARDS__0", "x")
+    err = load_error(Indexed)
+    assert codes(err) == {"HOSTS": ["invalid_type"], "SHARDS": ["invalid_type"]}
+    assert f"{missing} is not set" in str(err)

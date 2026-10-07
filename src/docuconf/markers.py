@@ -148,10 +148,13 @@ class Duration:
 
 @dataclass(frozen=True)
 class IndexedList:
-    """A list read from ``NAME__0``, ``NAME__1``... (SPEC §5).
+    """A list read from ``NAME__0``, ``NAME__1``... (SPEC §5): ``Annotated[list[str], IndexedList()]``.
 
-    pydantic-settings cannot read that form itself, so only the contract-first
-    mode (:func:`docuconf.load_contract`), which gathers the items first, uses it.
+    pydantic-settings cannot read that form itself, so docuconf gathers the
+    items and passes them to the settings class. Items must be numbered from 0
+    with no gap; ``NAME__0`` and ``NAME__2`` without ``NAME__1`` is
+    ``invalid_type``. ``NAME`` itself, and suffixes that are not an index
+    (``NAME__HOST``), are not read.
     """
 
 
