@@ -21,13 +21,20 @@ with OIDC, so no API token is stored anywhere, and `pypa/gh-action-pypi-publish`
 
 ## Each release
 
-1. Update `__version__` in `src/docuconf/_version.py` (the single source of the package version) and commit.
-   If the sample export changes, refresh the golden files: `UPDATE_GOLDEN=1 pytest tests/test_export.py` and
-   `docuconf export examples.app.settings:Settings --out examples/app/contract.cue`.
-2. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
-3. The workflow runs the tests (including `cue vet` against the docuconf-go meta-schema), checks that the tag
-   matches the package version, builds the sdist and wheel, checks them with `twine check`, and publishes.
-   Pre-release versions such as `0.2.0b1` (tag `v0.2.0b1`) are only installed by `pip install --pre`.
+Releases are automated with [release-please](https://github.com/googleapis/release-please); see
+[CONTRIBUTING.md](CONTRIBUTING.md#how-releases-happen) for the commit conventions it reads.
+
+1. Merge the open release PR (`chore(main): release X.Y.Z`). It already bumps `__version__` in
+   `src/docuconf/_version.py` and updates `CHANGELOG.md`. The golden files and example contracts do not need
+   regenerating: their comparisons ignore `metadata.generator.version`.
+2. release-please tags the merge commit `vX.Y.Z` and creates the GitHub release with the changelog entries.
+3. `.github/workflows/release.yml` runs on the tag: it runs the tests (including `cue vet` against the docuconf-go
+   meta-schema), checks that the tag matches the package version, builds the sdist and wheel, checks them with
+   `twine check`, and publishes.
+
+If the release PR was created with `GITHUB_TOKEN` (no release GitHub App configured), the tag does not trigger
+`release.yml` by itself, so `.github/workflows/release-please.yml` starts it with `gh workflow run`. To redo a
+release by hand: `gh workflow run release.yml --ref vX.Y.Z`.
 
 To test the pipeline without touching the real index, point a copy of the publish job at TestPyPI
 (`repository-url: https://test.pypi.org/legacy/`) with its own pending publisher there.

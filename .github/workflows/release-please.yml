@@ -1,0 +1,57 @@
+name: release-please
+
+# Keeps one release PR open on main that bumps the version from the
+# Conventional Commit messages and updates CHANGELOG.md. Merging that PR tags
+# the release and creates the GitHub release; release.yml then publishes it.
+# See CONTRIBUTING.md and RELEASING.md.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write # tags and GitHub releases
+  pull-requests: write # the release PR
+  actions: write # gh workflow run, below
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    env:
+      USE_APP: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+    steps:
+      # With a GitHub App token, the release PR runs CI and the release tag
+      # triggers release.yml. Without one, GITHUB_TOKEN is used, whose PRs and
+      # tags trigger no workflows, so release.yml is dispatched below instead.
+      - name: GitHub App token
+        id: app
+        if: env.USE_APP == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Only for the GITHUB_TOKEN fallback: with the App token, the tag push
+      # already triggers release.yml, and dispatching too would publish twice.
+      # workflow_dispatch is exempt from the GITHUB_TOKEN rule above.
+      - name: Run release.yml for each new tag
+        if: steps.release.outputs.releases_created == 'true' && steps.app.outputs.token == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTPUTS: ${{ toJSON(steps.release.outputs) }}
+        run: |
+          jq -r 'to_entries[] | select(.key | test("(^|--)tag_name$")) | .value | select(. != "")' <<<"$OUTPUTS" |
+            sort -u | while read -r tag; do
+              echo "Dispatching release.yml on $tag"
+              gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+            done

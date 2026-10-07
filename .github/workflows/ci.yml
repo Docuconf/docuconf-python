@@ -96,10 +96,13 @@ jobs:
           python -m pip install -r requirements.txt mypy
           python -m mypy --strict app.py
           python -c "import app"
-      # contract.cue is generated; it must match what the CLI exports today.
+      # contract.cue is generated; it must match what the CLI exports today,
+      # except metadata.generator.version, which release PRs bump.
       - name: Contract is up to date
         working-directory: examples/orders
-        run: python -m docuconf export app:Settings -o contract.cue --check
+        run: |
+          python -m docuconf export app:Settings -o "$RUNNER_TEMP/contract.cue"
+          ../../scripts/check-generated.sh --files contract.cue "$RUNNER_TEMP/contract.cue"
       - name: Contract passes the meta-schema
         run: |
           mod="$(mktemp -d)"
