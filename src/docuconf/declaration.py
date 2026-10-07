@@ -40,6 +40,7 @@ from .markers import (
     Exclude,
     FileInput,
     IndexedList,
+    JsonMaxLength,
     JsonValue,
     KeystoreFile,
     Meta,
@@ -48,6 +49,7 @@ from .markers import (
     TextFile,
     TlsFile,
     Url,
+    compact_json,
 )
 from .re2 import non_re2_feature
 from .values import CaBundle, Keystore, TlsKeyPair
@@ -522,6 +524,8 @@ class _Builder:
         vtype, attrs = self.classify(name, ann, meta, problem)
         if vtype is None:
             return
+        if vtype != "json" and _has(meta, JsonMaxLength):
+            problem(f"JsonMaxLength applies to json variables, not {vtype}; use Field(max_length=...)")
 
         common: dict[str, Any] = {}
         m: Meta | None = _first(meta, Meta)
@@ -572,6 +576,11 @@ class _Builder:
                 except Exception as e:  # e.g. a pattern the regex engine rejects
                     problem(f"cannot check the default: {_first_line(e)}")
                 default = self.contract_default(vtype, ann, py_default, problem, meta)
+                max_length = attrs.get("maxLength")
+                if vtype == "json" and max_length is not None and default is not _MISSING:
+                    n = len(compact_json(default))
+                    if n > max_length:
+                        problem(f"default is {n} characters of JSON, above maxLength {max_length}")
         if len(self.problems) > problems_before:
             return
         self.vars.append(
@@ -598,8 +607,11 @@ class _Builder:
 
     def classify(self, name: str, ann: Any, meta: list[Any], problem: Any) -> tuple[VarType | None, dict[str, Any]]:
         attrs: dict[str, Any] = {}
+        jml: JsonMaxLength | None = _first(meta, JsonMaxLength)
         jv: JsonValue | None = _first(meta, JsonValue)
         if jv is not None:
+            if jml is not None:
+                attrs["maxLength"] = jml.max_length
             if jv.schema is not None:
                 attrs["schema"] = dict(jv.schema)
             return "json", attrs
@@ -631,6 +643,17 @@ class _Builder:
                 schemes = list(uc.allowed_schemes)
             if schemes:
                 attrs["schemes"] = schemes
+            # Field(max_length=...) bounds the URL as given, in characters (SPEC §4.3).
+            if _attr(meta, "min_length") is not None:
+                problem("a url takes only a maximum length: Field(max_length=...)")
+            hi = _attr(meta, "max_length")
+            if hi is not None:
+                if not _is_subclass(ann, (str, SecretStr)):
+                    problem(
+                        "pydantic measures the max_length of a URL type after normalising it; declare the field "
+                        "as str with docuconf.Url() to bound the URL as given"
+                    )
+                attrs["maxLength"] = hi
             return "url", attrs
 
         if _is_subclass(ann, bool):
@@ -698,6 +721,17 @@ class _Builder:
                         attrs["itemMin"] = lo
                     if hi is not None:
                         attrs["itemMax"] = hi
+                # Item lengths, in characters: list[Annotated[str, Field(min_length=2, max_length=4)]] (SPEC §4.3).
+                lo, hi = _attr(item_meta, "min_length"), _attr(item_meta, "max_length")
+                if (lo is not None or hi is not None) and items != "string":
+                    problem("item min_length and max_length apply to lists of strings")
+                elif lo is not None and hi is not None and lo > hi:
+                    problem(f"item min_length {lo} is above item max_length {hi}")
+                else:
+                    if lo is not None:
+                        attrs["itemMinLength"] = lo
+                    if hi is not None:
+                        attrs["itemMaxLength"] = hi
                 return "list", attrs
 
         if _is_subclass(ann, (str, Path, SecretStr)) or not _is_complex(ann):
@@ -715,6 +749,8 @@ class _Builder:
             return "string", attrs
 
         # Anything else pydantic-settings decodes as JSON: a model, dict or list of objects.
+        if jml is not None:
+            attrs["maxLength"] = jml.max_length
         try:
             attrs["schema"] = TypeAdapter(ann).json_schema()
         except Exception as e:  # pydantic raises several error types for unsupported schemas

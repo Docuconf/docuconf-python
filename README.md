@@ -365,12 +365,15 @@ has changed. A reload that fails its checks is logged and the old value is kept.
 | `timedelta` (`ge`, `le`) | `duration`, `encoding: "iso8601"` |
 | `Annotated[timedelta, Duration("go")]` (or `"seconds"`, `"timespan"`) | `duration` with that `encoding` |
 | `AnyUrl`, `HttpUrl`, `PostgresDsn`..., or `Annotated[str \| SecretStr, Url(schemes=...)]` | `url` with `schemes` |
+| `Annotated[str \| SecretStr, Url()]` with `Field(max_length=...)` | `url` with `maxLength` |
 | `Literal["a", "b"]`, `Enum` of strings | `enum` |
 | `list[str]`, `list[int]` (`min_length`, `max_length`) | `list` (`minItems`, `maxItems`), `encoding: "json"` |
 | `list[Annotated[int, Field(ge=0, le=1023)]]`, `list[conint(ge=0)]` | `list` of `int` with `itemMin`, `itemMax` |
+| `list[Annotated[str, Field(min_length=2, max_length=4)]]`, `list[constr(max_length=4)]` | `list` of `string` with `itemMinLength`, `itemMaxLength` |
 | `CsvList[str]`, `CsvList[int]`, or `Annotated[list[str], NoDecode, Csv(";")]` | `list`, `encoding: "csv"`, `separator` |
 | `Annotated[list[str], IndexedList()]` | `list`, `encoding: "indexed"` (`NAME__0`, `NAME__1`...) |
 | a model, a `dict`, a list of models... | `json`, with `schema` from pydantic's JSON Schema |
+| `Annotated[Model, JsonMaxLength(256)]` | `json` with `maxLength` |
 | a nested model with `env_nested_delimiter` | one variable per field, e.g. `APP_DB__HOST` |
 | `SecretStr`, `SecretBytes`, `pydantic.Secret[T]`, or `Annotated[T, Secret()]` | `secret: true` |
 | `Field(examples=...)`, `Field(deprecated=...)` | `examples`, `deprecated` |
@@ -391,6 +394,15 @@ and pydantic's errors. `Annotated[T, Secret()]` marks any other type secret; `Do
 `gt`/`lt`, ±1) on `list[Annotated[int, Field(...)]]` or `list[conint(...)]`. They are exported as `itemMin` and
 `itemMax`, and an item outside them is `out_of_range` at boot. Python's `int` holds any 64-bit value, so no bounds are
 added on its own.
+
+**Length limits** count characters (Unicode code points, Python's `len`), never bytes: `日本` is 2 and an emoji is 1.
+For apps that store values in fixed-width fields, `Field(max_length=...)` bounds a URL as given (declare it as
+`str` or `SecretStr` with `Url()`: pydantic measures an `AnyUrl` after normalising it, so that is a declaration
+error), `min_length`/`max_length` on the item type bound each item of a string list after it is split, and
+`docuconf.JsonMaxLength(n)` bounds a `json` variable, measured as received (whitespace included, before parsing) or,
+from an overlay or a default, as the compact JSON the platform renders. A value outside them is `out_of_range`, and
+a secret's message gives its length, never its value. Item lengths on an `int` list, a minimum above the maximum,
+and a minimum length on a URL are declaration errors.
 
 **Encodings** (SPEC §5) are the ones pydantic-settings parses natively: lists as JSON (`["a","b"]`) unless the field
 uses `CsvList` (or `NoDecode` with `docuconf.Csv`), and durations as ISO 8601 (`PT90S`) unless the field carries

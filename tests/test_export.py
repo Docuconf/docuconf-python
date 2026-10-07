@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -264,3 +265,13 @@ def test_readme_example(tmp_path: Path) -> None:
     if CAN_VET:
         r = vet(out, tmp_path)
         assert r.returncode == 0, r.stdout + r.stderr
+
+
+@needs_cue
+def test_length_limits_pass_cue_vet(tmp_path: Path) -> None:
+    from tests.test_vars import LengthSettings
+
+    out = docuconf.to_contract(LengthSettings, name="svc")
+    assert re.search(r"itemMinLength: +2\n", out) and re.search(r"itemMaxLength: +4\n", out)
+    r = vet(out, tmp_path)
+    assert r.returncode == 0, r.stderr

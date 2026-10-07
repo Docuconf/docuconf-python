@@ -386,3 +386,152 @@ def test_indexed_list_gaps(monkeypatch: pytest.MonkeyPatch, env: dict[str, str],
     err = load_error(Indexed)
     assert codes(err) == {"HOSTS": ["invalid_type"], "SHARDS": ["invalid_type"]}
     assert f"{missing} is not set" in str(err)
+
+
+class RunLimits(BaseModel):
+    max: int | None = None
+    note: str | None = None
+
+
+class LengthSettings(DocuconfSettings):
+    """maxLength on url and json values, item lengths on string lists (SPEC §4.3)."""
+
+    callback: Annotated[str, Url(schemes=("https",))] | None = Field(
+        None, max_length=24, description="Where to report each run"
+    )
+    limits: Annotated[RunLimits, docuconf.JsonMaxLength(16)] | None = Field(None, description="Run limits as JSON")
+    branches: Annotated[list[Annotated[str, Field(min_length=2, max_length=4)]], NoDecode, Csv()] = Field(
+        default_factory=list, description="Branch codes, two to four characters each"
+    )
+    db_url: Annotated[SecretStr, Url()] | None = Field(None, max_length=30, description="Database connection string")
+
+
+def length_codes(env: dict[str, str]) -> dict[str, list[str]]:
+    try:
+        LengthSettings.load(env=env)
+    except ConfigValidationError as e:
+        return codes(e)
+    return {}
+
+
+def test_lengths_are_exported() -> None:
+    vars_ = docuconf.contract_data(LengthSettings, name="svc")["vars"]
+    assert vars_["CALLBACK"]["maxLength"] == 24
+    assert vars_["LIMITS"]["maxLength"] == 16
+    assert (vars_["BRANCHES"]["itemMinLength"], vars_["BRANCHES"]["itemMaxLength"]) == (2, 4)
+    assert vars_["DB_URL"]["maxLength"] == 30
+
+
+def test_lengths_count_characters_not_bytes_or_utf16_units() -> None:
+    s = LengthSettings.load(
+        env={
+            "CALLBACK": "https://例え.jp/日本語の道/一二三四",
+            "LIMITS": '{"note":"日本語の道"}',  # 16 characters, 26 bytes in UTF-8
+            "BRANCHES": "ZÜ01,日本,😀😀😀😀",  # an emoji is 1 character but 2 UTF-16 units
+        }
+    )
+    assert s.callback == "https://例え.jp/日本語の道/一二三四"
+    assert s.limits is not None and s.limits.note == "日本語の道"
+    assert s.branches == ["ZÜ01", "日本", "😀😀😀😀"]
+
+
+def test_values_above_their_lengths_are_out_of_range() -> None:
+    assert length_codes({"CALLBACK": "https://a.example/runs/4"}) == {}
+    assert length_codes({"CALLBACK": "https://a.example/runs/42"}) == {"CALLBACK": ["out_of_range"]}
+    assert length_codes({"BRANCHES": "BE,ZÜRICH"}) == {"BRANCHES": ["out_of_range"]}
+    assert length_codes({"BRANCHES": "BE,B"}) == {"BRANCHES": ["out_of_range"]}
+    assert length_codes({"BRANCHES": "😀😀😀😀😀"}) == {"BRANCHES": ["out_of_range"]}
+
+
+def test_a_json_value_is_measured_as_received() -> None:
+    assert length_codes({"LIMITS": '{"max":12345678}'}) == {}
+    assert length_codes({"LIMITS": '{"max":123456789}'}) == {"LIMITS": ["out_of_range"]}
+    # Whitespace counts: the app receives it.
+    with pytest.raises(ConfigValidationError) as info:
+        LengthSettings.load(env={"LIMITS": '{ "max": 123456 }'})
+    assert [str(v) for v in info.value.violations] == [
+        "LIMITS [out_of_range]: is 17 characters of JSON, above maxLength 16"
+    ]
+
+
+def test_a_json_value_from_an_overlay_is_measured_as_compact_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typing import ClassVar
+
+    from docuconf import Overlay
+
+    class FromOverlay(LengthSettings):
+        docuconf_overlays: ClassVar[tuple[Overlay, ...]] = (Overlay("platform", "/app/config/overlay.json"),)
+
+    (tmp_path / "app/config").mkdir(parents=True)
+    overlay = tmp_path / "app/config/overlay.json"
+    monkeypatch.setenv("DOCUCONF_FILE_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    # Indented in the file, but {"max":12345678} is 16 characters.
+    overlay.write_text('{ "limits": { "max": 12345678 } }')
+    env = {"DOCUCONF_FILE_ROOT": str(tmp_path)}
+    s = FromOverlay.load(env=env)
+    assert s.limits is not None and s.limits.max == 12345678
+    overlay.write_text('{ "limits": { "max": 123456789 } }')
+    with pytest.raises(ConfigValidationError) as info:
+        FromOverlay.load(env=env)
+    assert [str(v) for v in info.value.violations] == [
+        "LIMITS [out_of_range]: is 17 characters of JSON, above maxLength 16 (from overlay platform)"
+    ]
+
+
+def test_a_too_long_secret_reports_its_length_not_its_value() -> None:
+    with pytest.raises(ConfigValidationError) as info:
+        LengthSettings.load(env={"DB_URL": "postgres://app:s3cr3t@db:5432/app"})
+    assert [str(v) for v in info.value.violations] == [
+        "DB_URL [out_of_range]: should have at most 30 characters, has 33"
+    ]
+    assert "s3cr3t" not in str(info.value)
+
+
+def test_bad_lengths_are_declaration_errors() -> None:
+    class Bad(DocuconfSettings):
+        shards: list[Annotated[int, Field(ge=0)]] = Field(default_factory=list, description="Shard ids to own")
+        backwards: list[Annotated[str, Field(min_length=5, max_length=4)]] = Field(
+            default_factory=list, description="Lengths the wrong way round"
+        )
+        short: Annotated[str, Url()] | None = Field(None, min_length=10, description="A url takes no minimum")
+        port: Annotated[int, docuconf.JsonMaxLength(4)] = Field(8080, description="Not a json variable")
+        codes_: list[Annotated[str, Field(max_length=2)]] = Field(
+            ["abc"], alias="CODES", description="A default item that is too long"
+        )
+        home: Annotated[str, Url()] = Field("https://example.com", max_length=10, description="A default too long")
+        limits: Annotated[dict[str, int], docuconf.JsonMaxLength(5)] = Field(
+            default_factory=lambda: {"max": 1}, description="A default JSON value too long"
+        )
+
+    with pytest.raises(docuconf.DeclarationError) as info:
+        docuconf.declaration(Bad)
+    problems = "\n".join(info.value.problems)
+    assert "backwards): item min_length 5 is above item max_length 4" in problems
+    assert "short): a url takes only a maximum length" in problems
+    assert "port): JsonMaxLength applies to json variables, not int" in problems
+    assert "CODES (" in problems and "default ['abc'] does not satisfy" in problems
+    assert "home): default 'https://example.com' does not satisfy" in problems
+    assert "limits): default is 9 characters of JSON, above maxLength 5" in problems
+    with pytest.raises(TypeError, match="non-negative integer"):
+        docuconf.JsonMaxLength(-1)
+
+
+def test_contract_first_lengths() -> None:
+    contract = {
+        "apiVersion": "docuconf.dev/v1alpha1",
+        "kind": "ConfigContract",
+        "metadata": {"name": "lengths"},
+        "vars": {
+            "BRANCHES": {"type": "list", "description": "Branch codes", "items": "string", "itemMaxLength": 4},
+            "IDS": {"type": "list", "description": "Record ids", "items": "int", "itemMaxLength": 4},
+        },
+    }
+    with pytest.raises(docuconf.DeclarationError, match="IDS: itemMinLength and itemMaxLength apply only"):
+        docuconf.load_contract(contract, {})
+    del contract["vars"]["IDS"]  # type: ignore[attr-defined]
+    assert docuconf.load_contract(contract, {"BRANCHES": "BE,😀😀😀😀"}).BRANCHES == ["BE", "😀😀😀😀"]
+    with pytest.raises(ConfigValidationError):
+        docuconf.load_contract(contract, {"BRANCHES": "BE,GENEVA"}, termination_log=False)
