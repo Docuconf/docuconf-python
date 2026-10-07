@@ -31,9 +31,12 @@ grep -q '"DATABASE_URL": "\*\*\*"' "$tmp/config.json" || { echo "GET /config did
 echo "valid env: /healthz ok, /config $(cat "$tmp/config.json")"
 kill "$pid"; wait "$pid" 2>/dev/null || true; pid=""
 
-# 2. PORT=0 and no DATABASE_URL: the service exits non-zero and names both.
-if env -u DATABASE_URL PORT=0 "$python" app.py >"$tmp/bad.txt" 2>&1; then
-  echo "service started with PORT=0 and no DATABASE_URL" >&2; exit 1
+# 2. PORT=0 and no DATABASE_URL: the service exits 1, names both, and prints no traceback.
+status=0
+env -u DATABASE_URL PORT=0 "$python" app.py >"$tmp/bad.txt" 2>&1 || status=$?
+[ "$status" = 1 ] || { echo "want exit status 1 with PORT=0 and no DATABASE_URL, got $status" >&2; cat "$tmp/bad.txt" >&2; exit 1; }
+if grep -q Traceback "$tmp/bad.txt"; then
+  echo "startup output has a traceback:" >&2; cat "$tmp/bad.txt" >&2; exit 1
 fi
 for code in missing_required out_of_range; do
   grep -q "$code" "$tmp/bad.txt" || { echo "startup output lacks $code:" >&2; cat "$tmp/bad.txt" >&2; exit 1; }
