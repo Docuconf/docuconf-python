@@ -1,0 +1,128 @@
+# Keeps .github/docuconf-go.ref (the docuconf-go commit this SDK is tested
+# against) current: when docuconf-go main moves, opens or updates the
+# "bump docuconf-go" PR, whose CI is the compatibility check.
+#
+# docuconf-go's notify-sdks workflow sends repository_dispatch
+# docuconf-go-updated with client_payload.sha. Until it can (it needs the
+# release GitHub App), the daily schedule catches up against main.
+name: Bump docuconf-go
+
+on:
+  repository_dispatch:
+    types: [docuconf-go-updated]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: docuconf-go commit (full SHA); empty means docuconf-go main
+        required: false
+        default: ""
+  schedule:
+    - cron: "41 6 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: docuconf-go-bump
+  cancel-in-progress: false
+
+env:
+  # The workflow CI runs in; started by hand when the PR is made with
+  # GITHUB_TOKEN, whose events trigger no workflows.
+  CI_WORKFLOW: ci.yml
+  BUMP_BRANCH: docuconf-go-bump
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    env:
+      HAS_APP: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+    steps:
+      - name: Get the release App token
+        id: app
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ steps.app.outputs.token || github.token }}
+
+      - name: Pick the target docuconf-go commit
+        id: target
+        env:
+          PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
+          INPUT_SHA: ${{ inputs.sha }}
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          target="${PAYLOAD_SHA:-${INPUT_SHA:-}}"
+          if [ -z "$target" ]; then
+            url=https://github.com/Docuconf/docuconf-go
+            # The App token also reads a private docuconf-go.
+            if [ -n "$APP_TOKEN" ]; then url="https://x-access-token:${APP_TOKEN}@github.com/Docuconf/docuconf-go"; fi
+            target="$(git ls-remote "$url" refs/heads/main | cut -f1)"
+          fi
+          target="$(printf '%s' "$target" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+          if ! printf '%s' "$target" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::docuconf-go target '$target' is not a full 40-character commit SHA"
+            exit 1
+          fi
+          current="$(tr -d '[:space:]' < .github/docuconf-go.ref)"
+          changed=true
+          if [ "$target" = "$current" ]; then
+            echo "Already on docuconf-go $target; nothing to do."
+            changed=false
+          fi
+          {
+            echo "current=$current"
+            echo "target=$target"
+            echo "short=${target:0:7}"
+            echo "changed=$changed"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write the ref file
+        if: steps.target.outputs.changed == 'true'
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+        run: printf '%s\n' "$TARGET" > .github/docuconf-go.ref
+      - name: Open or update the bump PR
+        id: cpr
+        if: steps.target.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ steps.app.outputs.token || github.token }}
+          branch: ${{ env.BUMP_BRANCH }}
+          base: main
+          delete-branch: true
+          add-paths: |
+            .github/docuconf-go.ref
+          title: "build(deps): bump docuconf-go to ${{ steps.target.outputs.short }}"
+          commit-message: |
+            build(deps): bump docuconf-go to ${{ steps.target.outputs.short }}
+
+            Points .github/docuconf-go.ref at docuconf-go ${{ steps.target.outputs.target }}.
+          body: |
+            Bumps docuconf-go from `${{ steps.target.outputs.current }}` to `${{ steps.target.outputs.target }}`.
+
+            Changes: https://github.com/Docuconf/docuconf-go/compare/${{ steps.target.outputs.current }}...${{ steps.target.outputs.target }}
+
+            CI on this PR is the compatibility check: it runs this SDK against the new docuconf-go commit.
+
+            Opened by `.github/workflows/docuconf-go-bump.yml`; a newer docuconf-go commit updates this PR.
+
+      # A PR pushed with GITHUB_TOKEN triggers no workflows, but
+      # workflow_dispatch is exempt, and its checks show on the PR's head commit.
+      - name: Start CI on the bump branch
+        if: >-
+          env.HAS_APP != 'true' &&
+          (steps.cpr.outputs.pull-request-operation == 'created' ||
+           steps.cpr.outputs.pull-request-operation == 'updated')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run "$CI_WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$BUMP_BRANCH"
