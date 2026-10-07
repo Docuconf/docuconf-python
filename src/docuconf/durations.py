@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import re
 from datetime import timedelta
+from decimal import Decimal
+from typing import Literal
+
+#: Wire encodings of a duration variable (SPEC §5).
+Encoding = Literal["go", "iso8601", "seconds", "timespan"]
 
 _UNIT_NS = {
     "ns": 1,
@@ -77,3 +82,40 @@ def to_go(value: timedelta | str) -> str:
     """Canonical Go form of a ``timedelta`` or a Go duration string."""
     ns = timedelta_to_ns(value) if isinstance(value, timedelta) else parse_go_duration(value)
     return format_go_duration(ns)
+
+
+_SECONDS = re.compile(r"^[0-9]+(\.[0-9]+)?$")
+# .NET TimeSpan's constant format: [d.]hh:mm:ss[.fffffff]
+_TIMESPAN = re.compile(r"^(?:([0-9]+)\.)?([0-9]{1,2}):([0-9]{2}):([0-9]{2})(\.[0-9]{1,9})?$")
+
+
+def parse_seconds(text: str) -> int:
+    """Parse a decimal number of seconds (``90``, ``1.5``) into nanoseconds."""
+    if not _SECONDS.match(text):
+        raise ValueError(f"invalid duration in seconds {text!r}")
+    return int(Decimal(text) * 10**9)
+
+
+def parse_timespan(text: str) -> int:
+    """Parse a .NET TimeSpan (``[d.]hh:mm:ss[.fff]``) into nanoseconds."""
+    m = _TIMESPAN.match(text)
+    if not m:
+        raise ValueError(f"invalid TimeSpan {text!r}")
+    days, hours, minutes, seconds, frac = m.groups()
+    if int(hours) > 23 or int(minutes) > 59 or int(seconds) > 59:
+        raise ValueError(f"invalid TimeSpan {text!r}")
+    total = ((int(days or 0) * 24 + int(hours)) * 60 + int(minutes)) * 60 + int(seconds)
+    return total * 10**9 + (int(Decimal(frac) * 10**9) if frac else 0)
+
+
+def parse(text: str, encoding: Encoding) -> timedelta:
+    """Parse a duration in one of the non-ISO wire encodings into a ``timedelta`` (microsecond precision)."""
+    if encoding == "go":
+        ns = parse_go_duration(text)
+    elif encoding == "seconds":
+        ns = parse_seconds(text)
+    elif encoding == "timespan":
+        ns = parse_timespan(text)
+    else:
+        raise ValueError(f"{encoding} durations are parsed by pydantic")
+    return ns_to_timedelta(ns)

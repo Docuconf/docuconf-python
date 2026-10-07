@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,6 +7,8 @@ name = "docuconf-pydantic"
 dynamic = ["version"]
 description = "Typed configuration contracts for pydantic-settings: export your BaseSettings as a docuconf CUE contract and validate env vars, config files and TLS material at boot."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "docuconf contributors" }]
 keywords = ["pydantic", "pydantic-settings", "configuration", "environment", "kubernetes", "cue", "contract", "tls"]
@@ -34,6 +36,8 @@ dependencies = [
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6"]
+# Contract-first mode: check json variables against their JSON Schema.
+jsonschema = ["jsonschema>=4.18"]
 
 [project.scripts]
 docuconf = "docuconf.cli:main"
@@ -45,7 +49,7 @@ Issues = "https://github.com/docuconf/docuconf-python/issues"
 Specification = "https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md"
 
 [dependency-groups]
-dev = ["pytest>=8", "PyYAML>=6", "ruff>=0.6", "mypy>=1.11", "types-PyYAML"]
+dev = ["pytest>=8", "PyYAML>=6", "jsonschema>=4.18", "ruff>=0.6", "mypy>=1.11", "types-PyYAML", "types-jsonschema"]
 
 [tool.hatch.version]
 path = "src/docuconf/_version.py"
@@ -54,7 +58,7 @@ path = "src/docuconf/_version.py"
 packages = ["src/docuconf"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/docuconf", "tests", "examples", "README.md", "RELEASING.md", "pyproject.toml"]
+include = ["src/docuconf", "tests", "examples", "README.md", "RELEASING.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

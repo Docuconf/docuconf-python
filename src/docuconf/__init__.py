@@ -7,6 +7,7 @@ overlays at boot.
 """
 
 from ._version import __version__
+from .contract import ContractSettings, contract_settings, load_contract
 from .declaration import Declaration, declaration
 from .errors import ERROR_CODES, ConfigValidationError, DeclarationError, DocuconfError, Violation
 from .export import contract_data, to_contract
@@ -16,6 +17,7 @@ from .markers import (
     CaBundleFile,
     ConfigFile,
     Csv,
+    Duration,
     Exclude,
     KeystoreFile,
     Meta,
@@ -36,11 +38,13 @@ __all__ = [
     "CaBundleFile",
     "ConfigFile",
     "ConfigValidationError",
+    "ContractSettings",
     "Csv",
     "Declaration",
     "DeclarationError",
     "DocuconfError",
     "DocuconfSettings",
+    "Duration",
     "Exclude",
     "Keystore",
     "KeystoreFile",
@@ -55,9 +59,11 @@ __all__ = [
     "Watcher",
     "__version__",
     "contract_data",
+    "contract_settings",
     "declaration",
     "get_watcher",
     "load",
+    "load_contract",
     "to_contract",
     "with_overlays",
 ]

@@ -23,8 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The contract meta-schema (spec/cue) lives in docuconf-go; the export
-      # tests vet generated contracts against it.
+      # The contract meta-schema (spec/cue) and the shared conformance suite
+      # (conformance/cases.json) live in docuconf-go; the export tests vet
+      # generated contracts against the first, and tests/test_conformance.py
+      # runs the second.
       - uses: actions/checkout@v4
         with:
           repository: docuconf/docuconf-go
@@ -45,9 +47,10 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pytest PyYAML "ruff==0.16.10" mypy types-PyYAML
+          python -m pip install -e ".[jsonschema]" pytest PyYAML "ruff==0.16.10" mypy types-PyYAML types-jsonschema
           if [ "${{ matrix.deps }}" = minimum ]; then
-            python -m pip install "pydantic==2.7.0" "pydantic-settings==2.7.0" "cryptography==42.0.0" "tomli==2.0.1"
+            python -m pip install "pydantic==2.7.0" "pydantic-settings==2.7.0" "cryptography==42.0.0" "tomli==2.0.1" \
+              "jsonschema==4.18.0"
           fi
 
       # ruff is pinned: new releases add rules and formatting changes that would
@@ -64,6 +67,8 @@ jobs:
         env:
           DOCUCONF_SPEC_CUE: ${{ github.workspace }}/docuconf-go/spec/cue
           DOCUCONF_REQUIRE_VET: "1"
+          DOCUCONF_CONFORMANCE: ${{ github.workspace }}/docuconf-go/conformance/cases.json
+          DOCUCONF_REQUIRE_CONFORMANCE: "1"
 
   build:
     runs-on: ubuntu-latest

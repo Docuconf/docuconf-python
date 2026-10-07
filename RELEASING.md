@@ -18,8 +18,6 @@ with OIDC, so no API token is stored anywhere, and `pypa/gh-action-pypi-publish`
    The first successful run of the workflow creates the project. Afterwards, add the other maintainers as owners.
 2. **GitHub environment.** In the repository settings, create an environment named `pypi`. Limit its deployment
    branches and tags to `v*`, and add required reviewers if a human should approve each release.
-3. **Licence.** The licence is still pending. Before the first release, add a LICENSE file and the `license` field
-   (with `license-files`) to `pyproject.toml`.
 
 ## Each release
 

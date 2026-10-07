@@ -89,7 +89,9 @@ class GatewaySettings(BaseSettings):
         le=timedelta(minutes=5),
     )
     sample_rate: float = Field(0.25, description="Fraction of requests traced", ge=0, le=1)
-    worker_ports: list[int] = Field(default_factory=list, description="Ports the workers bind")
+    worker_ports: list[Annotated[int, Field(ge=1, le=65535)]] = Field(
+        default_factory=list, description="Ports the workers bind"
+    )
 
     # File inputs
     routes: Annotated[

@@ -10,6 +10,7 @@ express (see ``docuconf.markers``).
 from __future__ import annotations
 
 import enum
+import json
 import posixpath
 import re
 import types
@@ -35,8 +36,11 @@ from .markers import (
     CaBundleFile,
     ConfigFile,
     Csv,
+    Duration,
     Exclude,
     FileInput,
+    IndexedList,
+    JsonValue,
     KeystoreFile,
     Meta,
     Overlay,
@@ -258,6 +262,16 @@ def _attr(meta: Sequence[Any], name: str) -> Any:
         if v is not None:
             found = v
     return found
+
+
+def _int_bounds(meta: Sequence[Any]) -> tuple[int | None, int | None]:
+    """Inclusive integer bounds from ``ge``/``gt``/``le``/``lt`` metadata."""
+    lo, hi = _attr(meta, "ge"), _attr(meta, "le")
+    if _attr(meta, "gt") is not None:
+        lo = _attr(meta, "gt") + 1
+    if _attr(meta, "lt") is not None:
+        hi = _attr(meta, "lt") - 1
+    return (None if lo is None else int(lo)), (None if hi is None else int(hi))
 
 
 def _is_subclass(t: Any, base: type | tuple[type, ...]) -> bool:
@@ -506,6 +520,11 @@ class _Builder:
 
     def classify(self, name: str, ann: Any, meta: list[Any], problem: Any) -> tuple[VarType | None, dict[str, Any]]:
         attrs: dict[str, Any] = {}
+        jv: JsonValue | None = _first(meta, JsonValue)
+        if jv is not None:
+            if jv.schema is not None:
+                attrs["schema"] = dict(jv.schema)
+            return "json", attrs
         url = _first(meta, Url)
         if url is not None or _is_subclass(ann, _URL_TYPES):
             schemes: list[str] = []
@@ -525,21 +544,18 @@ class _Builder:
         if _is_subclass(ann, bool):
             return "bool", attrs
         if _is_subclass(ann, int) and not _is_subclass(ann, enum.Enum):
-            lo, hi = _attr(meta, "ge"), _attr(meta, "le")
-            if _attr(meta, "gt") is not None:
-                lo = _attr(meta, "gt") + 1
-            if _attr(meta, "lt") is not None:
-                hi = _attr(meta, "lt") - 1
+            lo, hi = _int_bounds(meta)
             if lo is not None:
-                attrs["min"] = int(lo)
+                attrs["min"] = lo
             if hi is not None:
-                attrs["max"] = int(hi)
+                attrs["max"] = hi
             return "int", attrs
         if _is_subclass(ann, (float, Decimal)):
             self.bounds(name, meta, attrs, lambda x: float(x) if isinstance(x, Decimal) else x)
             return "float", attrs
         if _is_subclass(ann, timedelta):
-            attrs["encoding"] = "iso8601"
+            enc: Duration | None = _first(meta, Duration)
+            attrs["encoding"] = enc.encoding if enc is not None else "iso8601"
             self.bounds(name, meta, attrs, lambda x: durations.to_go(x) if isinstance(x, timedelta) else x)
             return "duration", attrs
         values = _str_values(ann)
@@ -555,7 +571,7 @@ class _Builder:
             origin is not None and _is_subclass(origin, typing.Sequence) and not _is_subclass(origin, str)
         ):
             args = [a for a in get_args(ann) if a is not Ellipsis]
-            item = _unwrap(args[0])[0] if len(args) == 1 else None
+            item, item_meta, _ = _unwrap(args[0]) if len(args) == 1 else (None, [], False)
             items = None
             if _is_subclass(item, bool):
                 items = None
@@ -566,7 +582,9 @@ class _Builder:
             if items is not None:
                 attrs["items"] = items
                 csv = _first(meta, Csv)
-                if _has(meta, NoDecode):
+                if _has(meta, IndexedList):
+                    attrs["encoding"] = "indexed"
+                elif _has(meta, NoDecode):
                     attrs["encoding"] = "csv"
                     attrs["separator"] = csv.separator if csv else ","
                     if csv is None:
@@ -580,6 +598,13 @@ class _Builder:
                     attrs["minItems"] = lo
                 if hi is not None:
                     attrs["maxItems"] = hi
+                if items == "int":
+                    # Container-element constraints: list[Annotated[int, Field(ge=0)]] or list[conint(ge=0)].
+                    lo, hi = _int_bounds(item_meta)
+                    if lo is not None:
+                        attrs["itemMin"] = lo
+                    if hi is not None:
+                        attrs["itemMax"] = hi
                 return "list", attrs
 
         if _is_subclass(ann, (str, Path, SecretStr)) or not _is_complex(ann):
@@ -628,6 +653,8 @@ class _Builder:
         if vtype == "list":
             return [v.value if isinstance(v, enum.Enum) else v for v in value]
         if vtype == "json":
+            if ann is Any:  # a JsonValue variable: the default is JSON text, decoded when validated
+                return json.loads(value) if isinstance(value, str) else value
             return TypeAdapter(ann).dump_python(value, mode="json")
         if vtype in ("string", "url"):
             return str(value)

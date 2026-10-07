@@ -132,6 +132,8 @@ contract.#Contract & {
 			description: "Ports the workers bind"
 			items:       "int"
 			encoding:    "json"
+			itemMin:     1
+			itemMax:     65535
 			default: []
 		}
 	}
