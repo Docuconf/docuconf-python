@@ -223,6 +223,33 @@ def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not JSON")
 
 
+@dataclass(frozen=True)
+class JsonMaxLength:
+    """The longest a ``json`` variable may be, in characters (Unicode code points; SPEC §4.3)::
+
+        limits: Annotated[RateLimits, JsonMaxLength(256)]
+
+    pydantic's ``max_length`` does not apply to a model, so the limit is a
+    docuconf marker. A value from the environment is measured as received,
+    whitespace included, before it is parsed; one from a config-file overlay,
+    and the default, as the compact JSON the platform renders. A longer value
+    is ``out_of_range``.
+    """
+
+    max_length: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.max_length, bool) or not isinstance(self.max_length, int) or self.max_length < 0:
+            raise TypeError("JsonMaxLength: max_length must be a non-negative integer")
+
+
+def compact_json(value: Any) -> str:
+    """``value`` as the compact JSON the platform renders (CUE's ``json.Marshal``): no insignificant whitespace,
+    non-ASCII and ``<>&`` as they are, and U+2028/U+2029 escaped as Go escapes them."""
+    text = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    return text.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+
+
 def schema_validator(schema: Mapping[str, Any]) -> Any:
     """A ``jsonschema`` validator for ``schema``; raises ``ImportError`` without the package."""
     import jsonschema
@@ -362,6 +389,7 @@ __all__ = [
     "Duration",
     "Exclude",
     "FileInput",
+    "JsonMaxLength",
     "KeystoreFile",
     "Meta",
     "Overlay",

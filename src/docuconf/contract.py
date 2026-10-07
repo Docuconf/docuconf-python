@@ -22,7 +22,7 @@ from . import durations
 from .declaration import declaration
 from .errors import ConfigValidationError, DeclarationError, write_termination_log
 from .loader import ActiveEnvSource, Env, _RedactSecrets, build
-from .markers import Csv, Duration, IndexedList, JsonValue, Secret, Url, schema_validator
+from .markers import Csv, Duration, IndexedList, JsonMaxLength, JsonValue, Secret, Url, schema_validator
 from .re2 import non_re2_feature
 
 API_VERSION = "docuconf.dev/v1alpha1"
@@ -108,6 +108,7 @@ def _field(name: str, var: Mapping[str, Any], problems: list[str]) -> tuple[Any,
     elif vtype == "url":
         base = str
         inner.append(Url(schemes=tuple(var.get("schemes", ()))))
+        cons = {"max_length": var.get("maxLength")}
     elif vtype == "enum":
         values = var.get("values") or []
         if not values or not all(isinstance(v, str) for v in values):
@@ -120,6 +121,14 @@ def _field(name: str, var: Mapping[str, Any], problems: list[str]) -> tuple[Any,
             problems.append(f"{name}: list items must be string or int, not {items!r}")
             return None
         item: Any = str
+        lengths: dict[str, Any] = {
+            k: var[f] for k, f in (("min_length", "itemMinLength"), ("max_length", "itemMaxLength")) if f in var
+        }
+        if lengths and items != "string":
+            problems.append(f"{name}: itemMinLength and itemMaxLength apply only to lists of strings")
+            return None
+        if lengths:
+            item = Annotated[str, Field(**lengths)]
         if items == "int":
             item = int
             bounds: dict[str, Any] = {"ge": var.get("itemMin"), "le": var.get("itemMax")}
@@ -149,6 +158,8 @@ def _field(name: str, var: Mapping[str, Any], problems: list[str]) -> tuple[Any,
                 problems.append(f"{name}: invalid JSON Schema: {getattr(e, 'message', e)}")
                 return None
         inner.append(JsonValue(schema or None))
+        if var.get("maxLength") is not None:
+            inner.append(JsonMaxLength(var["maxLength"]))
         outer.append(NoDecode)
         if default is not None:
             # JSON text, decoded like a value from the environment, so a string default stays a string.

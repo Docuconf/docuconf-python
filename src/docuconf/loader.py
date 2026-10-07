@@ -40,6 +40,7 @@ from .errors import (
     write_termination_log,
 )
 from .files import FileResult, load_file
+from .markers import compact_json
 from .overlays import is_wired, lenient, read_overlay, with_overlays
 from .values import _FileValue
 
@@ -251,6 +252,8 @@ def _precheck(v: VarSpec, raw: str, init: dict[str, Any], out: list[Violation], 
             out.append(Violation(v.name, "var", "invalid_type", "not valid JSON"))
             hide.update(v.env_names)
             return False
+        if v.type == "json" and not _check_json_length(v, raw, "", out):
+            return False
         if v.type == "list" and v.attrs.get("items") == "int" and isinstance(data, list):
             return _check_int_items(v, data, out, strict=encoding == "json")
     if v.type == "list" and encoding == "csv" and v.attrs.get("items") == "int":
@@ -260,6 +263,19 @@ def _precheck(v: VarSpec, raw: str, init: dict[str, Any], out: list[Violation], 
 
 def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not JSON")
+
+
+def _check_json_length(v: VarSpec, wire: str, where: str, out: list[Violation]) -> bool:
+    """A json value's maxLength, in characters of its wire form (SPEC §4.3). The message never quotes it."""
+    max_length = v.attrs.get("maxLength")
+    if max_length is None or len(wire) <= max_length:
+        return True
+    out.append(
+        Violation(
+            v.name, "var", "out_of_range", f"is {len(wire)} characters of JSON, above maxLength {max_length}{where}"
+        )
+    )
+    return False
 
 
 def _check_int_items(v: VarSpec, items: list[Any], out: list[Violation], *, strict: bool) -> bool:
@@ -282,6 +298,8 @@ def _check_int_items(v: VarSpec, items: list[Any], out: list[Violation], *, stri
 def _code(v: VarSpec | None, err: Mapping[str, Any], nested: bool) -> ErrorCode:
     t = err["type"]
     if v is not None and v.type == "list" and t in ("too_short", "too_long"):
+        if nested:
+            return "out_of_range"  # an item's length (itemMinLength, itemMaxLength)
         return "too_few_items" if t == "too_short" else "too_many_items"
     if v is not None and v.type in ("string", "url") and t in ("too_short", "too_long"):
         return "out_of_range"  # the length of a SecretStr, which pydantic reports like a list's
@@ -323,11 +341,22 @@ def _message(v: VarSpec | None, err: Mapping[str, Any], nested_loc: tuple[Any, .
             if encoding == "iso8601" and _GO_DURATION.match(raw):
                 msg += '; to accept values like 30s, use Annotated[timedelta, docuconf.Duration("go")]'
         return msg
-    if v is not None and v.type in ("string", "url") and t in ("too_short", "too_long") and not nested_loc:
+    lengths = ("too_short", "too_long", "string_too_short", "string_too_long")
+    if (
+        v is not None
+        and t in lengths
+        and (
+            (not nested_loc and (v.type == "url" or (v.type == "string" and t in lengths[:2])))
+            or (v.type == "list" and len(nested_loc) == 1)  # an item's length
+        )
+    ):
+        # Lengths in characters (code points), with the length rather than the value, so it is safe for secrets.
         ctx = err.get("ctx") or {}
-        if t == "too_short":
-            return f"should have at least {ctx.get('min_length')} characters"
-        return f"should have at most {ctx.get('max_length')} characters"
+        inp = err.get("input")
+        has = f", has {len(inp)}" if isinstance(inp, str) else ""
+        if t.endswith("too_short"):
+            return f"{prefix}should have at least {ctx.get('min_length')} characters{has}"
+        return f"{prefix}should have at most {ctx.get('max_length')} characters{has}"
     if secret and t not in _SAFE_FOR_SECRETS:
         return f"{prefix}invalid value (secret, not shown)"
     msg = f"{prefix}{err['msg']}"
@@ -470,6 +499,13 @@ def _precheck_native(v: VarSpec, value: Any, overlay: str, out: list[Violation])
     if v.type == "float" and isinstance(value, float) and not math.isfinite(value):
         out.append(Violation(v.name, "var", "invalid_type", "must be a finite number" + where))
         return False
+    if v.type == "json" and not isinstance(value, str):
+        # Not a string in an overlay: measured as the compact JSON the platform renders (SPEC §4.3).
+        try:
+            wire = compact_json(value)
+        except (TypeError, ValueError):
+            return True  # pydantic reports it
+        return _check_json_length(v, wire, where, out)
     return True
 
 

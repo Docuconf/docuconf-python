@@ -455,7 +455,9 @@ def test_secret_string_length_is_out_of_range() -> None:
 
     with pytest.raises(ConfigValidationError) as info:
         S.load(env={"TOKEN": "short"})
-    assert [str(v) for v in info.value.violations] == ["TOKEN [out_of_range]: should have at least 20 characters"]
+    assert [str(v) for v in info.value.violations] == [
+        "TOKEN [out_of_range]: should have at least 20 characters, has 5"
+    ]
 
 
 # -- cryptography is optional ------------------------------------------------------------------
