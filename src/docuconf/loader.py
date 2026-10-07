@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import re
 from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
@@ -114,6 +115,29 @@ class Env:
             if v is not None:
                 return v
         return None
+
+    def indexed(self, names: tuple[str, ...]) -> tuple[list[str] | None, int | None]:
+        """The items of an ``indexed`` list (SPEC §5) under the first name that has any, or the first missing index.
+
+        Only ``NAME__<n>`` with a decimal ``<n>`` and no leading zero is an
+        item; ``NAME__HOST`` is not. Items must run from 0 with no gap.
+        """
+        for name in names:
+            prefix = f"{name}__" if self.case_sensitive else f"{name}__".lower()
+            items: dict[int, str] = {}
+            for key, value in self.values.items():
+                if value is not None and key.startswith(prefix) and _INDEX.fullmatch(key[len(prefix) :]):
+                    items[int(key[len(prefix) :])] = value
+            if items:
+                gap = next(i for i in range(len(items) + 1) if i not in items)
+                if gap < len(items):
+                    return None, gap
+                return [items[i] for i in range(len(items))], None
+        return None, None
+
+
+#: An item index of an ``indexed`` list: decimal, no leading zero.
+_INDEX = re.compile(r"0|[1-9][0-9]*")
 
 
 def _set_path(d: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
@@ -327,8 +351,22 @@ def build(
         overlay_data.append((o.name, data))
 
     origin: dict[str, str] = {}
+    indexed: dict[str, list[str]] = {}
     for v in decl.vars:
         raw = env.first(v.env_names)
+        if v.type == "list" and v.attrs.get("encoding") == "indexed":
+            # pydantic-settings cannot read NAME__0, NAME__1...: docuconf gathers the items and passes them in.
+            # NAME itself is not part of the list, so pydantic-settings must not read it either.
+            hide.update(v.env_names)
+            items, gap = env.indexed(v.env_names)
+            if gap is not None:
+                msg = f"items must be numbered from 0 with no gap, but {v.name}__{gap} is not set"
+                violations.append(Violation(v.name, "var", "invalid_type", msg))
+                skip.add(v.name)
+                continue
+            raw = None if items is None else json.dumps(items)
+            if items is not None:
+                indexed[v.name] = items
         in_overlay = None
         for name, data in overlay_data:
             found, value = _lookup(data, v.alias_loc)
@@ -370,6 +408,8 @@ def build(
             continue
         if not _precheck(v, raw, kwargs, violations, hide) and violations and violations[-1].input == v.name:
             skip.add(v.name)
+        elif v.name in indexed:
+            _set_path(kwargs, v.alias_loc, indexed[v.name])
 
     kwargs.update(file_kwargs)
     kwargs.update(init)

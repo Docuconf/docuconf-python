@@ -114,3 +114,19 @@ def test_duration_marker(monkeypatch: pytest.MonkeyPatch, encoding: Any, raw: st
     with pytest.raises(ConfigValidationError) as info:
         docuconf.load(S, watch=False, termination_log=False)
     assert info.value.codes == ["invalid_type"]
+
+
+@pytest.mark.parametrize(
+    ("env", "missing"),
+    [({"PARTITIONS__0": "1", "PARTITIONS__2": "3"}, "PARTITIONS__1"), ({"PARTITIONS__1": "2"}, "PARTITIONS__0")],
+)
+def test_indexed_list_gaps(env: dict[str, str], missing: str) -> None:
+    with pytest.raises(ConfigValidationError) as info:
+        docuconf.load_contract(CONTRACT, {"API_TOKEN": "tok", **env}, termination_log=False)
+    assert [(v.input, v.code) for v in info.value.violations] == [("PARTITIONS", "invalid_type")]
+    assert f"{missing} is not set" in str(info.value)
+
+
+def test_indexed_list_ignores_other_suffixes_and_the_bare_name() -> None:
+    env = {"API_TOKEN": "tok", "PARTITIONS": "[9]", "PARTITIONS__X": "9", "PARTITIONS__00": "9"}
+    assert docuconf.load_contract(CONTRACT, env, termination_log=False).PARTITIONS is None  # type: ignore[attr-defined]

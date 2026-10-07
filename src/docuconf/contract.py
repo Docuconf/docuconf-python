@@ -244,11 +244,7 @@ def load_contract(
     """
     cls = contract_settings(contract)
     decl = _Builder(cls).build()
-    values = dict(os.environ if env is None else env)
-    for v in decl.vars:
-        if v.type == "list" and v.attrs.get("encoding") == "indexed":
-            _gather_indexed(values, v.name)
-    environment = Env(cls, decl, values)
+    environment = Env(cls, decl, dict(os.environ if env is None else env))
     cls._docuconf_env = environment
     settings, violations = build(cls, decl, environment, {}, set(), {})
     if violations or settings is None:
@@ -258,14 +254,3 @@ def load_contract(
             write_termination_log(str(err), termination_log if isinstance(termination_log, str) else None)
         raise err
     return settings
-
-
-def _gather_indexed(values: dict[str, str], name: str) -> None:
-    """Join ``NAME__0``, ``NAME__1``... into the JSON array pydantic-settings decodes; unset without ``NAME__0``."""
-    items: list[str] = []
-    while (key := f"{name}__{len(items)}") in values:
-        items.append(values[key])
-    if items:
-        values[name] = json.dumps(items)
-    else:
-        values.pop(name, None)
