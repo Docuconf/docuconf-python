@@ -71,3 +71,32 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Attaches the sdist and wheel to the GitHub Release for the tag. GitHub
+  # Packages has no Python registry, so the Release is the GitHub copy. It
+  # uses the tested `build` output but does not depend on `publish`, so it
+  # works with only the workflow's GITHUB_TOKEN. See RELEASING.md.
+  github:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release and upload its assets
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Attach the sdist and wheel to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            flags=()
+            # PEP 440 pre-releases: 0.2.0a1, 0.2.0b1, 0.2.0rc1, 0.2.0.dev1.
+            if [[ "$version" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then flags+=(--prerelease); fi
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "docuconf-pydantic $version" "${flags[@]}"
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
