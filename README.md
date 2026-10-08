@@ -2,6 +2,8 @@
 
 Typed configuration contracts for [pydantic-settings](https://github.com/pydantic/pydantic-settings).
 
+Documentation: [docuconf.dev](https://docuconf.dev) · [Python guide](https://docuconf.dev/languages/python/)
+
 [docuconf](https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md) treats an application's configuration
 (environment variables, config files, TLS certificates, CA bundles, keystores) as an API between the app and the
 Kubernetes platform that runs it. With this package a Python service keeps its pydantic-settings class, and gets:
