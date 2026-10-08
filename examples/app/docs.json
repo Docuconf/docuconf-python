@@ -1,0 +1,499 @@
+{
+  "apiVersion": "docs.docuconf.dev/v1alpha1",
+  "kind": "ConfigDocs",
+  "service": {
+    "name": "orders",
+    "generator": {
+      "language": "python",
+      "sdk": "docuconf-pydantic",
+      "version": "0.1.0"
+    }
+  },
+  "groups": [
+    {
+      "name": "",
+      "title": "General",
+      "inputs": [
+        {
+          "name": "ORDERS_ALLOWED_ORIGINS",
+          "kind": "var",
+          "type": "list",
+          "typeLabel": "list of strings",
+          "required": false,
+          "secret": false,
+          "description": "CORS origins allowed to call the API",
+          "default": [],
+          "defaultEnv": [
+            {
+              "name": "ORDERS_ALLOWED_ORIGINS",
+              "value": ""
+            }
+          ],
+          "wire": {
+            "encoding": "csv",
+            "separator": ",",
+            "text": "the items joined by `,` with nothing around it, such as `a,b`",
+            "platform": "a list of strings, such as `[a, b]`; docuconf writes it in the wire format"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "invalid_type"
+          ]
+        },
+        {
+          "name": "ORDERS_API_TOKEN",
+          "kind": "var",
+          "type": "string",
+          "typeLabel": "string",
+          "required": true,
+          "secret": true,
+          "description": "Token for the payments API",
+          "wire": {
+            "text": "the text as is; it is never trimmed",
+            "platform": "a `secretKeyRef` or `injected` reference, never the value"
+          },
+          "constraints": [
+            {
+              "rule": "length",
+              "params": {
+                "minLength": 20
+              },
+              "text": "at least 20 characters (Unicode code points)"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "secretKeyRef",
+              "text": "a key of a Kubernetes Secret (`secretKeyRef`)"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "missing_required",
+            "invalid_type",
+            "out_of_range"
+          ]
+        },
+        {
+          "name": "ORDERS_DATABASE_URL",
+          "kind": "var",
+          "type": "url",
+          "typeLabel": "URL",
+          "required": true,
+          "secret": true,
+          "description": "Primary Postgres connection string",
+          "wire": {
+            "text": "an absolute URL, `scheme://...`, as is",
+            "platform": "a `secretKeyRef` or `injected` reference, never the value"
+          },
+          "constraints": [
+            {
+              "rule": "length",
+              "params": {
+                "maxLength": 2048
+              },
+              "text": "at most 2048 characters (Unicode code points)"
+            },
+            {
+              "rule": "schemes",
+              "params": {
+                "schemes": [
+                  "postgres",
+                  "postgresql"
+                ]
+              },
+              "text": "`postgres` or `postgresql` URL"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "secretKeyRef",
+              "text": "a key of a Kubernetes Secret (`secretKeyRef`)"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "missing_required",
+            "invalid_type",
+            "out_of_range",
+            "invalid_scheme"
+          ]
+        },
+        {
+          "name": "ORDERS_LOG_LEVEL",
+          "kind": "var",
+          "type": "enum",
+          "typeLabel": "enum",
+          "required": false,
+          "secret": false,
+          "description": "Minimum log level",
+          "default": "info",
+          "defaultEnv": [
+            {
+              "name": "ORDERS_LOG_LEVEL",
+              "value": "info"
+            }
+          ],
+          "wire": {
+            "text": "one of the values, exactly as listed",
+            "platform": "a string"
+          },
+          "constraints": [
+            {
+              "rule": "values",
+              "params": {
+                "values": [
+                  "debug",
+                  "info",
+                  "warn",
+                  "error"
+                ]
+              },
+              "text": "one of `debug`, `info`, `warn` or `error`"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "not_in_enum"
+          ]
+        },
+        {
+          "name": "ORDERS_PORT",
+          "kind": "var",
+          "type": "int",
+          "typeLabel": "integer",
+          "required": false,
+          "secret": false,
+          "description": "HTTP listen port",
+          "default": 8080,
+          "defaultEnv": [
+            {
+              "name": "ORDERS_PORT",
+              "value": "8080"
+            }
+          ],
+          "wire": {
+            "text": "a base-10 integer with no leading `+` or zeros, such as `8080`",
+            "platform": "an integer"
+          },
+          "constraints": [
+            {
+              "rule": "range",
+              "params": {
+                "max": 65535,
+                "min": 1
+              },
+              "text": "between 1 and 65535"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "resourceFieldRef",
+              "text": "a container resource limit or request (`resourceFieldRef`), such as `limits.memory`"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "invalid_type",
+            "out_of_range"
+          ]
+        },
+        {
+          "name": "ORDERS_TIMEOUT",
+          "kind": "var",
+          "type": "duration",
+          "typeLabel": "duration",
+          "required": false,
+          "secret": false,
+          "description": "Upstream timeout",
+          "default": "30s",
+          "defaultEnv": [
+            {
+              "name": "ORDERS_TIMEOUT",
+              "value": "PT30S"
+            }
+          ],
+          "wire": {
+            "encoding": "iso8601",
+            "text": "an ISO 8601 duration, such as `PT90S` for 90 seconds",
+            "platform": "a duration in Go syntax, such as `90s` or `1m30s`; docuconf writes it in the wire format"
+          },
+          "constraints": [
+            {
+              "rule": "range",
+              "params": {
+                "max": "5m"
+              },
+              "text": "at most 5m"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "invalid_type",
+            "out_of_range"
+          ]
+        },
+        {
+          "name": "rates",
+          "kind": "file",
+          "type": "config",
+          "typeLabel": "JSON config file",
+          "required": true,
+          "secret": false,
+          "description": "Per-client rate limits",
+          "file": {
+            "path": "/etc/orders/rates/rates.json",
+            "pathEnv": "ORDERS_RATES_FILE",
+            "format": "json",
+            "reload": "restart",
+            "contents": "a JSON file, read at the path",
+            "reloadText": "the app reads the file at startup; a changed source needs a rollout"
+          },
+          "constraints": [
+            {
+              "rule": "schema",
+              "params": {
+                "schema": {
+                  "properties": {
+                    "burst": {
+                      "default": 0,
+                      "minimum": 0,
+                      "title": "Burst",
+                      "type": "integer"
+                    },
+                    "per_minute": {
+                      "minimum": 1,
+                      "title": "Per Minute",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "per_minute"
+                  ],
+                  "title": "Rates",
+                  "type": "object"
+                }
+              },
+              "text": "matches the JSON Schema in the contract"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "inline",
+              "text": "content in the platform repository (`inline`), rendered as a content-hashed ConfigMap"
+            },
+            {
+              "kind": "configMap",
+              "text": "a ConfigMap (`configMap`), one key per file"
+            },
+            {
+              "kind": "secret",
+              "text": "a Kubernetes Secret (`secret`), one key per file"
+            },
+            {
+              "kind": "csi",
+              "text": "the Secrets Store CSI driver (`csi`)"
+            },
+            {
+              "kind": "image",
+              "text": "an OCI image volume (`image`), for content too large for a ConfigMap"
+            },
+            {
+              "kind": "injected",
+              "note": "the injector writes the file at the path",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "file_missing",
+            "file_unreadable",
+            "file_malformed",
+            "schema_mismatch"
+          ]
+        },
+        {
+          "name": "tls",
+          "kind": "file",
+          "type": "tls",
+          "typeLabel": "TLS key pair",
+          "required": true,
+          "secret": true,
+          "description": "Certificate the service serves HTTPS with",
+          "file": {
+            "path": "/etc/orders/tls",
+            "reload": "watch",
+            "contents": "a directory holding `tls.crt` and `tls.key` (PEM), as a `kubernetes.io/tls` Secret lays them out",
+            "reloadText": "the app reloads the file when it changes"
+          },
+          "constraints": [
+            {
+              "rule": "dnsNames",
+              "params": {
+                "dnsNames": [
+                  "orders.internal"
+                ]
+              },
+              "text": "the certificate covers `orders.internal`"
+            },
+            {
+              "rule": "minRemaining",
+              "params": {
+                "minRemaining": "720h"
+              },
+              "text": "at least 720h (30 days) of validity left"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "secret",
+              "note": "the whole `kubernetes.io/tls` Secret, with no key",
+              "text": "a Kubernetes Secret (`secret`), one key per file"
+            },
+            {
+              "kind": "certificate",
+              "text": "a cert-manager Certificate (`certificate`)"
+            },
+            {
+              "kind": "csi",
+              "text": "the Secrets Store CSI driver (`csi`)"
+            },
+            {
+              "kind": "injected",
+              "note": "the injector writes the file at the path",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "file_missing",
+            "file_unreadable",
+            "file_malformed",
+            "certificate_invalid",
+            "certificate_expiring",
+            "certificate_name_mismatch",
+            "key_mismatch"
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": "missing_required",
+      "meaning": "A required input is not set, and has no default.",
+      "fix": "Set it through one of its allowed sources."
+    },
+    {
+      "code": "invalid_type",
+      "meaning": "The value does not parse as the input's type in its wire format, or a secret still holds an unresolved injector reference (`vault:`, `op://`, `ref+`).",
+      "fix": "Write the value in the input's wire format. For an injected secret, make sure the injector runs."
+    },
+    {
+      "code": "out_of_range",
+      "meaning": "A number, duration, length or list item is outside the input's bounds.",
+      "fix": "Use a value within the input's constraints."
+    },
+    {
+      "code": "not_in_enum",
+      "meaning": "The value is not one of the allowed values.",
+      "fix": "Use one of the listed values, spelled exactly as listed."
+    },
+    {
+      "code": "invalid_scheme",
+      "meaning": "The URL's scheme is not one of the allowed schemes.",
+      "fix": "Use a URL with an allowed scheme."
+    },
+    {
+      "code": "file_missing",
+      "meaning": "The file is not at its path.",
+      "fix": "Give the input a source, and check that it is mounted at the declared path (or that its path variable points at it)."
+    },
+    {
+      "code": "file_unreadable",
+      "meaning": "The file exists but cannot be read.",
+      "fix": "Check the mount, the file mode and the user the app runs as."
+    },
+    {
+      "code": "file_malformed",
+      "meaning": "The file does not parse in its format, is a directory, is not UTF-8 text, or holds too few certificates.",
+      "fix": "Fix the content so it parses in the declared format."
+    },
+    {
+      "code": "schema_mismatch",
+      "meaning": "The value or file parses, but does not match its JSON Schema.",
+      "fix": "Fix the content to match the schema; `docuconf vet` checks inline content before deploy."
+    },
+    {
+      "code": "certificate_invalid",
+      "meaning": "A certificate does not parse, has expired or is not yet valid, uses a key algorithm that is not allowed, or does not chain to `ca.crt`.",
+      "fix": "Issue a valid certificate that meets the input's constraints."
+    },
+    {
+      "code": "certificate_expiring",
+      "meaning": "The certificate has less validity left than `minRemaining`.",
+      "fix": "Renew it earlier: with cert-manager, set `renewBefore` to at least `minRemaining`."
+    },
+    {
+      "code": "certificate_name_mismatch",
+      "meaning": "The certificate does not cover every name in `dnsNames`.",
+      "fix": "Reissue it with every name as a subject alternative name."
+    },
+    {
+      "code": "key_mismatch",
+      "meaning": "`tls.key` does not match the certificate in `tls.crt`.",
+      "fix": "Supply the key and certificate from the same issuance."
+    }
+  ]
+}

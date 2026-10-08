@@ -44,7 +44,8 @@ jsonschema = ["jsonschema>=4.18"]
 docuconf = "docuconf.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/docuconf/docuconf-python"
+Homepage = "https://docuconf.dev/languages/python/"
+Documentation = "https://docuconf.dev/languages/python/"
 Source = "https://github.com/docuconf/docuconf-python"
 Issues = "https://github.com/docuconf/docuconf-python/issues"
 Specification = "https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md"
