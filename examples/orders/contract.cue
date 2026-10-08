@@ -47,6 +47,7 @@ contract.#Contract & {
 		REQUEST_TIMEOUT: {
 			type:        "duration"
 			description: "Timeout for a request to finish"
+			details:     "How long a request may take before the server gives up on it.\n\nRaise it when clients upload large order batches. Keep it below the load balancer's idle timeout, or the\nclient sees a reset rather than a `504`.\n\nThe platform writes Go durations such as `45s`; docuconf converts them to ISO 8601 for pydantic."
 			encoding:    "iso8601"
 			min:         "1s"
 			max:         "5m"

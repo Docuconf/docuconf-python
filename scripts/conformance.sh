@@ -24,5 +24,5 @@ trap 'rm -rf "$venv"' EXIT
 "${PYTHON:-python3}" -m venv "$venv"
 "$venv/bin/python" -m pip install --quiet --disable-pip-version-check -e ".[tls,yaml,jsonschema]" pytest
 "$venv/bin/python" -m pytest -p no:cacheprovider \
-  tests/test_conformance.py tests/test_export.py tests/test_overlays.py \
+  tests/test_conformance.py tests/test_export.py tests/test_overlays.py tests/test_docs.py \
   -k "test_conformance or cue or meta_schema"

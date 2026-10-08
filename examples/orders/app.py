@@ -38,6 +38,13 @@ class Settings(DocuconfSettings):
         le=timedelta(minutes=5),
         description="Timeout for a request to finish",
     )
+    """How long a request may take before the server gives up on it.
+
+    Raise it when clients upload large order batches. Keep it below the load balancer's idle timeout, or the
+    client sees a reset rather than a ``504``.
+
+    The platform writes Go durations such as ``45s``; docuconf converts them to ISO 8601 for pydantic.
+    """
     worker_count: int = Field(4, ge=1, le=64, description="Workers processing orders")
 
 
