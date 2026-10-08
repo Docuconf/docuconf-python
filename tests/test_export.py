@@ -29,6 +29,17 @@ CUE = find_cue()
 CAN_VET = CUE is not None and (SPEC_CUE / "cue.mod").is_dir() and (SPEC_CUE / "contract").is_dir()
 needs_cue = pytest.mark.skipif(not CAN_VET, reason="cue or the docuconf-go meta-schema is not available")
 
+_GENERATOR_VERSION = re.compile(r'(generator:\s*\{[^{}]*?\bversion:\s*)"[^"]*"')
+
+
+def same_contract(a: str, b: str) -> bool:
+    """Compare two exports, ignoring only metadata.generator.version.
+
+    It is the package version, which every release PR bumps, so committed exports keep the version they were
+    written with.
+    """
+    return _GENERATOR_VERSION.sub(r'\1"<v>"', a) == _GENERATOR_VERSION.sub(r'\1"<v>"', b)
+
 
 def vet(contract: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
     """Copy the meta-schema module to a temp dir and vet ``contract`` as package ./svc."""
@@ -51,8 +62,15 @@ def test_golden() -> None:
     if os.environ.get("UPDATE_GOLDEN") == "1":
         GOLDEN.parent.mkdir(exist_ok=True)
         GOLDEN.write_text(out)
-    assert out == GOLDEN.read_text()
+    assert same_contract(out, GOLDEN.read_text())
     assert docuconf.declaration(GatewaySettings).warnings == []
+
+
+def test_same_contract_ignores_only_the_generator_version() -> None:
+    out = docuconf.to_contract(GatewaySettings)
+    bumped = re.sub(r'(\bversion:\s*)"[^"]*"', r'\1"99.0.0"', out, count=1)
+    assert bumped != out and same_contract(bumped, out)
+    assert not same_contract(out.replace('"HTTP listen port"', '"port"'), out)
 
 
 def test_deterministic() -> None:
@@ -112,7 +130,7 @@ def test_cli_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pyt
     monkeypatch.chdir(HERE.parent)
     out = tmp_path / "contract.cue"
     assert cli.main(["export", "tests.fixtures.sample_settings:GatewaySettings", "--out", str(out)]) == 0
-    assert out.read_text() == GOLDEN.read_text()
+    assert same_contract(out.read_text(), GOLDEN.read_text())
     assert cli.main(["export", "tests.fixtures.sample_settings:GatewaySettings", "--out", str(out), "--check"]) == 0
     out.write_text("stale")
     assert cli.main(["export", "tests.fixtures.sample_settings:GatewaySettings", "--out", str(out), "--check"]) == 1
@@ -131,7 +149,7 @@ def test_console_script(tmp_path: Path) -> None:
         text=True,
     )
     assert r.returncode == 0, r.stderr
-    assert r.stdout == GOLDEN.read_text()
+    assert same_contract(r.stdout, GOLDEN.read_text())
 
 
 def problems(cls: type[BaseSettings]) -> str:
@@ -261,7 +279,7 @@ def test_readme_example(tmp_path: Path) -> None:
     from examples.app.settings import Settings
 
     out = docuconf.to_contract(Settings)
-    assert out == (HERE.parent / "examples/app/contract.cue").read_text()
+    assert same_contract(out, (HERE.parent / "examples/app/contract.cue").read_text())
     if CAN_VET:
         r = vet(out, tmp_path)
         assert r.returncode == 0, r.stdout + r.stderr
