@@ -148,6 +148,22 @@ jobs:
           mkdir "$mod/orders"
           cp examples/orders/contract.cue "$mod/orders/"
           cd "$mod" && cue vet -c ./orders
+      # CONFIG.md, CONFIG.agents.md and docs.json are generated from each
+      # example's committed contract.cue (the step above exports to a temp
+      # file, so a release's generator.version bump stays as committed) by
+      # docuconf docs, built from the docuconf-go checkout. These are the
+      # README's commands.
+      - name: Generated docs are up to date
+        run: |
+          (cd docuconf-go/cmd/docuconf && go build -o "$RUNNER_TEMP/docuconf" .)
+          for ex in orders app; do
+            (
+              cd "examples/$ex"
+              "$RUNNER_TEMP/docuconf" docs contract.cue --check CONFIG.md
+              "$RUNNER_TEMP/docuconf" docs contract.cue --format agents --check CONFIG.agents.md
+              "$RUNNER_TEMP/docuconf" docs contract.cue --format model --check docs.json
+            )
+          done
       - name: Smoke test
         run: examples/orders/smoke.sh
         env:

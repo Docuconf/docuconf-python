@@ -25,7 +25,7 @@ class Settings(DocuconfSettings):
     log_level: Literal["debug", "info", "warn", "error"] = Field("info", description="Minimum log level")
     # SecretStr makes it a secret in the contract, and keeps it out of reprs and error messages.
     database_url: Annotated[SecretStr, Url(schemes=("postgres",))] = Field(
-        description="Postgres connection string for orders"
+        max_length=2048, description="Postgres connection string for orders"
     )
     # NoDecode + Csv: read "a,b" rather than pydantic-settings' default JSON list.
     allowed_origins: Annotated[list[str], NoDecode, Csv()] = Field(

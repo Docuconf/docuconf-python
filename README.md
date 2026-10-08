@@ -341,7 +341,7 @@ class Settings(DocuconfSettings):
     port: int = Field(8080, ge=1, le=65535, description="HTTP listen port")
     log_level: Literal["debug", "info", "warn", "error"] = Field("info", description="Minimum log level")
     database_url: Annotated[SecretStr, Url(schemes=("postgres", "postgresql"))] = Field(
-        description="Primary Postgres connection string"
+        max_length=2048, description="Primary Postgres connection string"
     )
     api_token: SecretStr = Field(min_length=20, description="Token for the payments API")
     timeout: timedelta = Field(timedelta(seconds=30), le=timedelta(minutes=5), description="Upstream timeout")
@@ -360,6 +360,10 @@ class Settings(DocuconfSettings):
 
 `settings.tls.server_context()` returns an `ssl.SSLContext` that reloads its certificate when the files rotate, and
 `settings.rates.per_minute` is an `int`.
+
+The docs for this contract, [`examples/app/CONFIG.md`](examples/app/CONFIG.md) for developers and
+[`examples/app/CONFIG.agents.md`](examples/app/CONFIG.agents.md) for AI agents, are generated from it with the `docuconf`
+CLI from [docuconf-go](https://github.com/docuconf/docuconf-go), as in the [orders example](examples/orders/README.md#generated-docs).
 
 | marker | field type | checked at boot |
 |---|---|---|

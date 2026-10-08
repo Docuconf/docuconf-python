@@ -15,7 +15,7 @@ the three things the Python SDK gives an app:
 |---|---|---|
 | `PORT` | int | 1–65535, default `8080` |
 | `LOG_LEVEL` | enum | `debug`, `info`, `warn`, `error`; default `info` |
-| `DATABASE_URL` | url | secret, required, scheme `postgres` |
+| `DATABASE_URL` | url | secret, required, scheme `postgres`, at most 2048 characters |
 | `ALLOWED_ORIGINS` | list of strings, comma-separated | at least 1 item; default `http://localhost:3000` |
 | `REQUEST_TIMEOUT` | duration, ISO 8601 (`PT45S`) | `1s`–`5m`, default `30s` |
 | `WORKER_COUNT` | int | 1–64, default `4` |
@@ -59,6 +59,19 @@ date):
 
 ```console
 $ .venv/bin/docuconf export app:Settings -o contract.cue
+```
+
+## Generated docs
+
+[`CONFIG.md`](CONFIG.md) (for developers), [`CONFIG.agents.md`](CONFIG.agents.md) (for AI agents) and `docs.json` (the
+docs model both are rendered from) are generated from `contract.cue` by the `docuconf` CLI from
+[docuconf-go](https://github.com/docuconf/docuconf-go); never edit them by hand either. Regenerate them after exporting
+the contract (CI runs each with `--check` in place of `-o`, against the committed `contract.cue`):
+
+```console
+$ docuconf docs contract.cue -o CONFIG.md
+$ docuconf docs contract.cue --format agents -o CONFIG.agents.md
+$ docuconf docs contract.cue --format model -o docs.json
 ```
 
 ## Deploy

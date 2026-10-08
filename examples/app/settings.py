@@ -23,7 +23,7 @@ class Settings(DocuconfSettings):
     port: int = Field(8080, ge=1, le=65535, description="HTTP listen port")
     log_level: Literal["debug", "info", "warn", "error"] = Field("info", description="Minimum log level")
     database_url: Annotated[SecretStr, Url(schemes=("postgres", "postgresql"))] = Field(
-        description="Primary Postgres connection string"
+        max_length=2048, description="Primary Postgres connection string"
     )
     api_token: SecretStr = Field(min_length=20, description="Token for the payments API")
     timeout: timedelta = Field(timedelta(seconds=30), le=timedelta(minutes=5), description="Upstream timeout")
