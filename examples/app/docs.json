@@ -330,6 +330,37 @@
               "text": "matches the JSON Schema in the contract"
             }
           ],
+          "fields": [
+            {
+              "path": "burst",
+              "type": "integer",
+              "required": false,
+              "default": 0,
+              "constraints": [
+                {
+                  "rule": "range",
+                  "params": {
+                    "minimum": 0
+                  },
+                  "text": "at least 0"
+                }
+              ]
+            },
+            {
+              "path": "per_minute",
+              "type": "integer",
+              "required": true,
+              "constraints": [
+                {
+                  "rule": "range",
+                  "params": {
+                    "minimum": 1
+                  },
+                  "text": "at least 1"
+                }
+              ]
+            }
+          ],
           "sources": [
             {
               "kind": "inline",
@@ -442,7 +473,7 @@
     },
     {
       "code": "out_of_range",
-      "meaning": "A number, duration, length or list item is outside the input's bounds.",
+      "meaning": "A number, duration, length, list item or key is outside the input's bounds; an empty key always is.",
       "fix": "Use a value within the input's constraints."
     },
     {

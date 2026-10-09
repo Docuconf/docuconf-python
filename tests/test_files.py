@@ -166,7 +166,13 @@ def test_garbage_certificate_and_key(gateway_root: Path) -> None:
         "-----BEGIN CERTIFICATE-----\nbm9wZQ==\n-----END CERTIFICATE-----\n"
     )
     (gateway_root / TLS_DIR / "tls.key").write_text("not a key")
-    assert file_codes(load_error()) == {"serving-tls": ["certificate_invalid", "certificate_invalid"]}
+    # A certificate block that does not parse is certificate_invalid; a key file with no PEM key, file_malformed.
+    assert file_codes(load_error()) == {"serving-tls": ["certificate_invalid", "file_malformed"]}
+
+
+def test_files_with_no_pem_are_malformed(gateway_root: Path) -> None:
+    (gateway_root / TLS_DIR / "tls.crt").write_text("not a certificate\n")
+    assert file_codes(load_error()) == {"serving-tls": ["file_malformed"]}
 
 
 def test_malformed_config(gateway_root: Path) -> None:

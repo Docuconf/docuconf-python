@@ -127,8 +127,9 @@ CsvList = Annotated[list[_T], NoDecode, Csv()]
 class Duration:
     """The wire encoding of a ``timedelta`` variable (SPEC §5).
 
-    pydantic parses ISO 8601 (``PT90S``) natively, which is what a plain
-    ``timedelta`` field exports. ``Duration("go")`` reads Go syntax
+    A plain ``timedelta`` field exports ISO 8601 (``PT90S``), which pydantic
+    reads natively; docuconf rejects the forms SPEC §5 does not allow (lower
+    case, weeks, months, a sign). ``Duration("go")`` reads Go syntax
     (``1m30s``) instead, ``Duration("seconds")`` a decimal number of seconds
     and ``Duration("timespan")`` a .NET ``TimeSpan`` (``[d.]hh:mm:ss[.fff]``)::
 
@@ -141,9 +142,9 @@ class Duration:
 
     def __get_pydantic_core_schema__(self, source: Any, handler: GetCoreSchemaHandler) -> core_schema.CoreSchema:
         encoding = self.encoding
-        if encoding == "iso8601":
-            return handler(source)
 
+        # Every encoding is parsed by docuconf, exactly as SPEC §5 says: pydantic's own ISO 8601 reader also
+        # takes lower case, weeks and signs, which the platform never renders.
         def parse(v: Any) -> Any:
             if not isinstance(v, str):
                 return v
@@ -181,9 +182,12 @@ class JsonValue:
     # Compared and hashed by value: typing caches Annotated[...] by its arguments, so two markers that compared
     # equal would share one cached annotation. A dict schema is unhashable, which turns that cache off.
     schema: Mapping[str, Any] | None = None
+    #: Decode a string as JSON text. False for a value that is already data, such as a parsed config file.
+    decode_text: bool = True
 
     def __get_pydantic_core_schema__(self, source: Any, handler: GetCoreSchemaHandler) -> core_schema.CoreSchema:
         check = None
+        decode_text = self.decode_text
         if self.schema:
             try:
                 check = schema_validator(self.schema)
@@ -194,7 +198,7 @@ class JsonValue:
                 )
 
         def decode(v: Any) -> Any:
-            if not isinstance(v, str):
+            if not isinstance(v, str) or not decode_text:
                 return v
             try:
                 return json.loads(v, parse_constant=_reject_constant)
@@ -299,6 +303,9 @@ class ConfigFile(FileInput):
 
     #: ``json``, ``yaml`` or ``toml``; inferred from the file extension when omitted.
     format: Literal["json", "yaml", "toml"] | None = None
+    #: A JSON Schema given as data, for a field typed ``Any``: the file's data is checked against it (with the
+    #: ``jsonschema`` extra) instead of bound to a model. The contract-first mode uses it.
+    schema: Mapping[str, Any] | None = None
 
 
 KeyAlgorithm = Literal["RSA", "ECDSA", "Ed25519"]

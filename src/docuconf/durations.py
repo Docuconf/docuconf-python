@@ -27,14 +27,17 @@ CONTRACT_DURATION = re.compile(r"^([0-9]+(ns|us|ms|s|m|h))+$")
 
 
 def parse_go_duration(text: str) -> int:
-    """Parse a Go duration (``time.ParseDuration``) into nanoseconds.
+    """Parse a Go duration (``time.ParseDuration``, SPEC §5) into nanoseconds.
 
-    Raises ``ValueError`` for invalid input.
+    An optional sign, then ``0`` or numbers with a unit (``1m30s``, ``1.5h``,
+    ``.5s``, ``1.s``). Units are lower case; nothing is trimmed. The result is
+    truncated to whole nanoseconds. Raises ``ValueError`` for anything else,
+    and for a value beyond +/-(2^63-1) nanoseconds.
     """
     s = text
-    sign = 1
+    neg = False
     if s[:1] in ("-", "+"):
-        sign = -1 if s[0] == "-" else 1
+        neg = s[0] == "-"
         s = s[1:]
     if s == "0":
         return 0
@@ -53,13 +56,21 @@ def parse_go_duration(text: str) -> int:
             ns += int(frac) * _UNIT_NS[unit] // 10 ** len(frac)
         total += ns
         pos = m.end()
-    return sign * total
+    if total > (2**63 if neg else 2**63 - 1):
+        raise ValueError(f"duration {text!r} is out of range")
+    return -total if neg else total
 
 
-def format_go_duration(ns: int) -> str:
-    """Format nanoseconds as a canonical contract duration: ``5400s`` -> ``1h30m``."""
+def format_go_duration(ns: int, *, signed: bool = False) -> str:
+    """Format nanoseconds as a canonical contract duration: ``5400s`` -> ``1h30m``.
+
+    A contract duration is never negative; with ``signed``, a negative value
+    is written with a leading ``-`` (``-1m30s``), as a typed value may be.
+    """
     if ns < 0:
-        raise ValueError("a contract duration cannot be negative")
+        if not signed:
+            raise ValueError("a contract duration cannot be negative")
+        return "-" + format_go_duration(-ns)
     if ns == 0:
         return "0s"
     out = []
@@ -75,18 +86,22 @@ def timedelta_to_ns(td: timedelta) -> int:
 
 
 def ns_to_timedelta(ns: int) -> timedelta:
-    return timedelta(microseconds=ns // 1000)
+    """Nanoseconds as a ``timedelta``, truncated toward zero to whole microseconds."""
+    return timedelta(microseconds=ns // 1000 if ns >= 0 else -(-ns // 1000))
 
 
-def to_go(value: timedelta | str) -> str:
-    """Canonical Go form of a ``timedelta`` or a Go duration string."""
+def to_go(value: timedelta | str, *, signed: bool = False) -> str:
+    """Canonical Go form of a ``timedelta`` or a Go duration string (see :func:`format_go_duration`)."""
     ns = timedelta_to_ns(value) if isinstance(value, timedelta) else parse_go_duration(value)
-    return format_go_duration(ns)
+    return format_go_duration(ns, signed=signed)
 
 
 _SECONDS = re.compile(r"^[0-9]+(\.[0-9]+)?$")
 # .NET TimeSpan's constant format: [d.]hh:mm:ss[.fffffff]
-_TIMESPAN = re.compile(r"^(?:([0-9]+)\.)?([0-9]{1,2}):([0-9]{2}):([0-9]{2})(\.[0-9]{1,9})?$")
+_TIMESPAN = re.compile(r"^(?:([0-9]+)\.)?([0-9]{1,2}):([0-9]{2}):([0-9]{2})(\.[0-9]{1,7})?$")
+_ISO_NUM = r"([0-9]+(?:[.,][0-9]+)?)"
+# P[nD][T[nH][nM][nS]]: upper case, unsigned, no years, months or weeks (SPEC §5).
+_ISO8601 = re.compile(rf"^P(?:{_ISO_NUM}D)?(?:T(?:{_ISO_NUM}H)?(?:{_ISO_NUM}M)?(?:{_ISO_NUM}S)?)?$")
 
 
 def parse_seconds(text: str) -> int:
@@ -108,14 +123,38 @@ def parse_timespan(text: str) -> int:
     return total * 10**9 + (int(Decimal(frac) * 10**9) if frac else 0)
 
 
-def parse(text: str, encoding: Encoding) -> timedelta:
-    """Parse a duration in one of the non-ISO wire encodings into a ``timedelta`` (microsecond precision)."""
+def parse_iso8601(text: str) -> int:
+    """Parse an ISO 8601 duration (``PT1M30S``, ``P1DT2H``, ``PT1,5S``) into nanoseconds.
+
+    Only days, hours, minutes and seconds, which have a fixed length; at least
+    one component, and at least one after a ``T``. Upper case and unsigned.
+    """
+    m = _ISO8601.match(text)
+    if not m or text in ("P", "PT") or text.endswith("T"):
+        raise ValueError(f"invalid ISO 8601 duration {text!r}")
+    total = Decimal(0)
+    for num, size in zip(m.groups(), (86400, 3600, 60, 1), strict=True):
+        if num is not None:
+            total += Decimal(num.replace(",", ".")) * size
+    return int(total * 10**9)
+
+
+def parse_ns(text: str, encoding: Encoding) -> int:
+    """Parse a duration in a wire encoding (SPEC §5) into nanoseconds; raises ``ValueError``."""
     if encoding == "go":
-        ns = parse_go_duration(text)
-    elif encoding == "seconds":
-        ns = parse_seconds(text)
-    elif encoding == "timespan":
-        ns = parse_timespan(text)
-    else:
-        raise ValueError(f"{encoding} durations are parsed by pydantic")
-    return ns_to_timedelta(ns)
+        return parse_go_duration(text)
+    if encoding == "seconds":
+        return parse_seconds(text)
+    if encoding == "timespan":
+        return parse_timespan(text)
+    if encoding == "iso8601":
+        return parse_iso8601(text)
+    raise ValueError(f"unknown duration encoding {encoding!r}")
+
+
+def parse(text: str, encoding: Encoding) -> timedelta:
+    """Parse a duration in a wire encoding into a ``timedelta`` (truncated to microseconds)."""
+    try:
+        return ns_to_timedelta(parse_ns(text, encoding))
+    except OverflowError:
+        raise ValueError(f"duration {text!r} is out of range") from None

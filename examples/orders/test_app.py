@@ -7,9 +7,8 @@ import hmac
 
 import pytest
 from app import Settings, public_config, verify
-from pydantic import SecretStr
 
-from docuconf import ConfigValidationError
+from docuconf import ConfigValidationError, KeySet
 
 OLD, NEW = "o" * 32, "n" * 32
 BODY = b'{"order":"42","status":"paid"}'
@@ -20,7 +19,7 @@ def sign(key: str) -> str:
     return hmac.new(key.encode(), BODY, hashlib.sha256).hexdigest()
 
 
-def keys(value: str) -> list[SecretStr] | None:
+def keys(value: str) -> KeySet | None:
     """WEBHOOK_KEYS as the service loads it at boot."""
     return Settings.load(env={**BASE, "WEBHOOK_KEYS": value}, termination_log=False).webhook_keys
 

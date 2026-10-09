@@ -23,13 +23,24 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 import pydantic_core
-from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, SecretBytes, SecretStr, TypeAdapter, UrlConstraints
+from pydantic import (
+    AliasChoices,
+    AliasPath,
+    BaseModel,
+    ConfigDict,
+    PydanticUserError,
+    SecretBytes,
+    SecretStr,
+    TypeAdapter,
+    UrlConstraints,
+)
 from pydantic import ValidationError as PydanticValidationError
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, NoDecode
 
 from . import docs, durations
 from .errors import DeclarationError
+from .keyset import Keys, KeySet
 from .markers import (
     FILE_MARKERS,
     BinaryFile,
@@ -74,10 +85,48 @@ FORMAT_BY_SUFFIX: dict[str, FileFormat] = {".json": "json", ".yaml": "yaml", ".y
 MAX_KEY_DEPTH = 8
 FEATURE_FLAG = re.compile(r"^(FF|FEATURE|FEATURE_FLAG|ENABLE)_")
 
-VarType = Literal["string", "int", "float", "bool", "duration", "url", "enum", "list", "json"]
+VarType = Literal["string", "int", "float", "bool", "duration", "url", "enum", "list", "keySet", "json"]
 FileType = Literal["config", "tls", "caBundle", "keystore", "text", "binary"]
 
 _MISSING: Any = object()
+
+#: The longest ``deprecated`` message, in characters (SPEC §4.2).
+MAX_DEPRECATION = 500
+
+
+def deprecation(
+    deprecated: Any, replaced_by: str | None, required: bool, problem: Any, *, what: str = "input"
+) -> dict[str, Any] | None:
+    """The contract's ``deprecated`` object for a field's ``Field(deprecated=...)``, checked (SPEC §4.2).
+
+    The message is required (it says what to use instead, or why the input is
+    going away), not blank and at most 500 characters, and a required input
+    cannot be deprecated, since the platform could not stop setting it.
+    """
+    if deprecated is None or deprecated is False:
+        if replaced_by:
+            problem(f'replaced_by needs Field(deprecated="...") too: only a deprecated {what} has a replacement')
+        return None
+    if isinstance(deprecated, str):
+        message = deprecated
+    elif deprecated is True:
+        message = ""
+    else:  # typing_extensions.deprecated / warnings.deprecated
+        message = str(getattr(deprecated, "message", "") or "")
+    if not message.strip():
+        problem(
+            'deprecated must say what to use instead, or why the input is going away: Field(deprecated="Use PORT '
+            'instead")'
+        )
+    elif len(message) > MAX_DEPRECATION:
+        problem(f"deprecated must be at most {MAX_DEPRECATION} characters, has {len(message)}")
+    if required:
+        problem(f"a required {what} cannot be deprecated, since the platform could not stop setting it (SPEC §4.2)")
+    out: dict[str, Any] = {"message": message}
+    if replaced_by:
+        out["replacedBy"] = replaced_by
+    return out
+
 
 try:  # pydantic >= 2.7
     from pydantic import Secret as PydanticSecret
@@ -538,6 +587,8 @@ class _Builder:
         secret = _is_subclass(ann, REDACTING_TYPES) or inner is not None or _has(meta, Secret)
         # A list of SecretStr, such as a key set (SPEC §6.1): every item is a secret, so the list is one.
         secret = secret or _is_subclass(_list_item(ann), SecretStr)
+        # A key set is always secret (SPEC §4.3).
+        secret = secret or _is_subclass(ann, KeySet)
         if inner is not None:
             # pydantic.Secret[T]: the contract describes T.
             ann, more, _ = _unwrap(inner)
@@ -556,14 +607,8 @@ class _Builder:
             if secret:
                 problem("a secret must not have examples")
             common["examples"] = [str(e.value if isinstance(e, enum.Enum) else e) for e in fi.examples]
-        if fi.deprecated:
-            dep: dict[str, Any] = {
-                "message": fi.deprecated
-                if isinstance(fi.deprecated, str)
-                else getattr(fi.deprecated, "message", "deprecated")
-            }
-            if m and m.replaced_by:
-                dep["replacedBy"] = m.replaced_by
+        dep = deprecation(fi.deprecated, m.replaced_by if m else None, required, problem, what="variable")
+        if dep is not None:
             common["deprecated"] = dep
         if m and m.config_key:
             common["configKey"] = m.config_key
@@ -590,7 +635,7 @@ class _Builder:
                 parts = (full_annotation, *fi.metadata)
                 target: Any = Annotated[parts] if fi.metadata else full_annotation
                 try:
-                    TypeAdapter(target, config=self.ta_config).validate_python(py_default)
+                    self.adapter(target).validate_python(py_default)
                 except PydanticValidationError as e:
                     msgs = "; ".join(err["msg"] for err in e.errors())
                     problem(f"default {py_default!r} does not satisfy the field's constraints: {msgs}")
@@ -622,6 +667,14 @@ class _Builder:
             )
         )
 
+    def adapter(self, target: Any) -> TypeAdapter[Any]:
+        """A ``TypeAdapter`` with the settings' regex engine, or, for a type with its own config
+        (a model, dataclass or TypedDict), without."""
+        try:
+            return TypeAdapter(target, config=self.ta_config)
+        except PydanticUserError:
+            return TypeAdapter(target)
+
     def check_pattern(self, pattern: str, problem: Any) -> None:
         bad = non_re2_feature(pattern)
         if bad:
@@ -629,6 +682,18 @@ class _Builder:
 
     def classify(self, name: str, ann: Any, meta: list[Any], problem: Any) -> tuple[VarType | None, dict[str, Any]]:
         attrs: dict[str, Any] = {}
+        keys: Keys | None = _first(meta, Keys)
+        if _is_subclass(ann, KeySet) or keys is not None:
+            if not _is_subclass(ann, KeySet):
+                problem(f"Keys() applies to KeySet fields, not {getattr(ann, '__name__', ann)}")
+                return None, attrs
+            keys = keys or Keys()
+            for msg in keys.problems():
+                problem(msg)
+            for label in ("min_length", "max_length", "pattern"):
+                if _attr(meta, label) is not None:
+                    problem(f"a key set takes its bounds from docuconf.Keys(...), not Field({label}=...)")
+            return "keySet", keys.contract()
         jml: JsonMaxLength | None = _first(meta, JsonMaxLength)
         jv: JsonValue | None = _first(meta, JsonValue)
         if jv is not None:
@@ -869,11 +934,21 @@ class _Builder:
                     problem("cannot infer the format from the file extension; set format=")
             elif fmt not in ("json", "yaml", "toml"):
                 problem('format must be "json", "yaml" or "toml"')
-            try:
-                adapter = TypeAdapter(ann)
-                specific["schema"] = adapter.json_schema()
-            except Exception as e:
-                problem(f"cannot generate a JSON Schema for {ann!r}: {e}")
+            if marker.schema is not None:
+                # A schema given as data (the contract-first mode): the file's data, checked against it.
+                if ann is not Any:
+                    problem(
+                        "ConfigFile(schema=...) applies to a field typed Any; otherwise the schema comes from the type"
+                    )
+                adapter = TypeAdapter(Annotated[Any, JsonValue(marker.schema or None, decode_text=False)])
+                if marker.schema:
+                    specific["schema"] = dict(marker.schema)
+            else:
+                try:
+                    adapter = TypeAdapter(ann)
+                    specific["schema"] = adapter.json_schema()
+                except Exception as e:
+                    problem(f"cannot generate a JSON Schema for {ann!r}: {e}")
         elif isinstance(marker, TlsFile):
             ftype, secret, expect = "tls", True, (TlsKeyPair,)
             if marker.dns_names:
@@ -943,12 +1018,10 @@ class _Builder:
             out["secret"] = True
         if marker.group:
             out["group"] = marker.group
-        if fi.deprecated:
-            out["deprecated"] = {
-                "message": fi.deprecated
-                if isinstance(fi.deprecated, str)
-                else getattr(fi.deprecated, "message", "deprecated")
-            }
+        m: Meta | None = _first(meta, Meta)
+        dep = deprecation(fi.deprecated, m.replaced_by if m else None, required, problem, what="file input")
+        if dep is not None:
+            out["deprecated"] = dep
         out["path"] = path
         if marker.path_env:
             out["pathEnv"] = marker.path_env

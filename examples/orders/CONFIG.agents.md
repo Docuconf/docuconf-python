@@ -113,27 +113,21 @@ The platform writes Go durations such as `45s`; docuconf converts them to ISO 86
 #### WEBHOOK_KEYS
 
 - kind: environment variable
-- type: `list` (list of strings)
+- type: `keySet` (key set)
 - required: no
 - secret: yes
-- constraint: between 1 and 2 items
-- constraint: each item between 32 and 256 characters (Unicode code points)
-- wire format: the items joined by `,` with nothing around it, such as `a,b`
+- constraint: between 1 and 2 keys
+- constraint: each key between 32 and 256 characters (Unicode code points)
+- wire format: the keys joined by `,`, such as `old,new` during a rotation; keys are never trimmed, and an empty key is never valid
 - in a values file: a `secretKeyRef` or `injected` reference, never the value
+- rotation: The app accepts every key in the set, so a key is rotated without an outage, in three steps. The platform cannot check that a rollout keeps a key in common with the previous one, so follow them in order: (1) add the new key to the set, and roll out; (2) switch the sender (the side that signs or presents the key) to the new key; (3) remove the old key from the set, and roll out.
 - allowed sources: `secretKeyRef`, `injected`
 - boot errors: `invalid_type`, `out_of_range`, `too_few_items`, `too_many_items`
 
 Keys that verify the signature on incoming payment webhooks
 
-A webhook is accepted when it is signed with any key in the list, so the key can be rotated without turning
-webhooks away. To rotate:
-
- 1. add the new key as the second item, and roll out;
- 2. switch the sender to the new key;
- 3. remove the old key, and roll out.
-
-Each key is 32 to 256 characters, so an empty or truncated key fails at boot. Without this variable, the service
-rejects every webhook.
+A webhook is accepted when it is signed with any key in the set, so the key can be rotated without turning
+webhooks away. An empty or truncated key fails at boot. Without this variable, the service rejects every webhook.
 
 #### WORKER_COUNT
 
@@ -165,8 +159,8 @@ At boot the SDK reports every problem at once, one line each: `INPUT: message (c
 
 - `missing_required`: A required input is not set, and has no default. Fix: Set it through one of its allowed sources.
 - `invalid_type`: The value does not parse as the input's type in its wire format, or a secret still holds an unresolved injector reference (`vault:`, `op://`, `ref+`). Fix: Write the value in the input's wire format. For an injected secret, make sure the injector runs.
-- `out_of_range`: A number, duration, length or list item is outside the input's bounds. Fix: Use a value within the input's constraints.
+- `out_of_range`: A number, duration, length, list item or key is outside the input's bounds; an empty key always is. Fix: Use a value within the input's constraints.
 - `not_in_enum`: The value is not one of the allowed values. Fix: Use one of the listed values, spelled exactly as listed.
 - `invalid_scheme`: The URL's scheme is not one of the allowed schemes. Fix: Use a URL with an allowed scheme.
-- `too_few_items`: The list has fewer items than its minimum. Fix: Add items.
-- `too_many_items`: The list has more items than its maximum. Fix: Remove items.
+- `too_few_items`: The list has fewer items than its minimum, or the key set fewer keys. Fix: Add items, or keys.
+- `too_many_items`: The list has more items than its maximum, or the key set more keys. Fix: Remove items, or keys: a key set holds the old key only until the rotation is done.

@@ -63,13 +63,19 @@ jobs:
 
       - name: Install cue
         run: go install cuelang.org/go/cmd/cue@v0.17.1
+      # The docuconf CLI, which compares the export of the shared fixture with
+      # docuconf-go's conformance/export/golden.cue.
+      - name: Build the docuconf CLI
+        run: cd docuconf-go/cmd/docuconf && go build -o "$RUNNER_TEMP/docuconf" .
 
-      # The docuconf-go-facing subset (conformance suite, cue vet of exported
-      # contracts); docuconf-go's downstream workflow runs the same script.
+      # The docuconf-go-facing subset (conformance suite, which fails on any
+      # skipped case; the shared export fixture; cue vet of exported contracts);
+      # docuconf-go's downstream workflow runs the same script.
       - name: Run scripts/conformance.sh
         run: scripts/conformance.sh
         env:
           DOCUCONF_GO_DIR: ${{ github.workspace }}/docuconf-go
+          DOCUCONF_CLI: ${{ runner.temp }}/docuconf
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -96,6 +102,8 @@ jobs:
           DOCUCONF_REQUIRE_VET: "1"
           DOCUCONF_CONFORMANCE: ${{ github.workspace }}/docuconf-go/conformance/cases.json
           DOCUCONF_REQUIRE_CONFORMANCE: "1"
+          DOCUCONF_CLI: ${{ runner.temp }}/docuconf
+          DOCUCONF_REQUIRE_CLI: "1"
 
   # The orders example (examples/orders) builds against this repository's SDK.
   orders-example:

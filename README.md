@@ -418,8 +418,9 @@ has changed. A reload that fails its checks is logged and the old value is kept.
 | `Annotated[Model, JsonMaxLength(256)]` | `json` with `maxLength` |
 | a nested model with `env_nested_delimiter` | one variable per field, e.g. `APP_DB__HOST` |
 | `SecretStr`, `SecretBytes`, `pydantic.Secret[T]`, or `Annotated[T, Secret()]` | `secret: true` |
-| `Annotated[list[Annotated[SecretStr, Field(min_length=32)]], NoDecode, Csv()]`, a key set ([SPEC §6.1](https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md#61-rotation)) | `list` of `string`, `secret: true`, with `itemMinLength`; each key stays a `SecretStr` |
-| `Field(examples=...)`, `Field(deprecated=...)` | `examples`, `deprecated` |
+| `KeySet`, or `Annotated[KeySet, Keys(min_keys=..., max_keys=..., key_min_length=..., key_max_length=..., encoding=...)]` (see [Key sets](#key-sets)) | `keySet` (`minKeys`, `maxKeys`, `keyMinLength`, `keyMaxLength`), always `secret: true` |
+| `Annotated[list[Annotated[SecretStr, Field(min_length=32)]], NoDecode, Csv()]` | `list` of `string`, `secret: true`, with `itemMinLength`; each item stays a `SecretStr` |
+| `Field(examples=...)`, `Field(deprecated="Use PORT instead")` | `examples`, `deprecated` (on variables and file inputs) |
 | `Annotated[T, Meta(group=..., replaced_by=..., config_key=...)]` | `group`, `deprecated.replacedBy`, `configKey` |
 | `Annotated[T, Exclude()]` | left out (for values from a secrets manager, say) |
 
@@ -447,6 +448,12 @@ from an overlay or a default, as the compact JSON the platform renders. A value 
 a secret's message gives its length, never its value. Item lengths on an `int` list, a minimum above the maximum,
 and a minimum length on a URL are declaration errors.
 
+**Key sets** are described in [Key sets](#key-sets), and **deprecated inputs** take `Field(deprecated="...")`
+with a message that says what to use instead, or why the input is going away: not blank, and at most 500 characters.
+`Meta(replaced_by="PORT")` names the replacement. A required input cannot be deprecated, since the platform could not
+stop setting it; that, a blank message and `deprecated=True` without one are declaration errors. When a deprecated
+input is set, `load` logs a warning naming it and its message, never its value; it still loads and is still checked.
+
 **Encodings** (SPEC §5) are the ones pydantic-settings parses natively: lists as JSON (`["a","b"]`) unless the field
 uses `CsvList` (or `NoDecode` with `docuconf.Csv`), and durations as ISO 8601 (`PT90S`) unless the field carries
 `docuconf.Duration("go")` (`1m30s`), `Duration("seconds")` (`90`) or `Duration("timespan")` (`00:01:30`). A wrong
@@ -456,6 +463,17 @@ duration names the expected form (`expected an ISO 8601 duration like PT30S`). A
 with no gap (`NAME__0` and `NAME__2` without `NAME__1` is `invalid_type`), and other suffixes such as `NAME__HOST`
 are not items. Platform authors still write `"90s"` and `["a", "b"]`; the platform's renderer converts. Duration
 defaults and bounds are exported in canonical Go form (`1h30m`).
+
+**Parsing is strict** (SPEC §5): docuconf accepts exactly the strings the spec allows, whatever pydantic would take on
+its own, and rejects the rest with `invalid_type`. Nothing is trimmed, including the items of a `csv` list
+(`a, b` is `a` and ` b`), so `" true"` or `"8080\n"` fails. A `bool` is `true` or `false` in any case (`TRUE`,
+`False`), never `1`, `yes` or `on`. An `int` is ASCII digits with an optional sign (`+5`, `007` is 7, never octal),
+never `0x10`, `1_000`, `1e3` or `5.0`. A `float` has digits on both sides of an optional point and an optional
+exponent (`1E3`, `25e-2`), never `.5`, `5.`, `inf`, `nan` or a hex float. Durations follow their encoding's grammar
+exactly: Go's (`1.5h`, `-1m30s`, `0`, never `5`, `5S` or `1d`), ISO 8601 with days, hours, minutes and seconds only
+(`P1DT2H`, `PT1,5S`, never `pt90s`, `P1W` or `-PT5S`), unsigned seconds (`90`, `1.5`), or a TimeSpan
+(`[d.]hh:mm:ss[.fffffff]`). The same rules apply to values from a config-file overlay, after each native value is
+turned into the string it stands for.
 
 **Patterns** are exported as written. By default pydantic matches `pattern` with the Rust `regex` crate. Like RE2, it
 has no lookaround or backreferences and matches anywhere in the value, as CUE's `=~` does, so anchor with `^...$` to
@@ -467,8 +485,9 @@ match the whole value. docuconf rejects non-RE2 syntax at declaration time, incl
 cover a class that does not subclass `DocuconfSettings`, the env name format, descriptions of at least 5
 characters, defaults that satisfy their own constraints (including enum values and bounds), defaults or examples on
 secrets, markers on a type they do not fit (`Url()` on an `int`, `Csv()` on a `str`, `Duration()` on an `int`),
-non-RE2 patterns, `Csv` without `NoDecode`, file input names and paths, a `path_env` that is also a variable, and
-keystore password variables that are not declared secrets. Warnings (`docuconf.DocuconfWarning`, issued by `load`
+non-RE2 patterns, `Csv` without `NoDecode`, file input names and paths, a `path_env` that is also a variable,
+keystore password variables that are not declared secrets, key set bounds (`min_keys` at least 1, `max_keys` at least
+`min_keys`), and the `deprecated` rules above. Warnings (`docuconf.DocuconfWarning`, issued by `load`
 and printed by the CLI) cover names that look like feature flags (`FF_`, `FEATURE_`, `ENABLE_`; see SPEC §10),
 exclusive float bounds, and types exported as strings.
 
@@ -487,15 +506,54 @@ exclusive float bounds, and types exported as strings.
   the input; anything else becomes `invalid value (secret, not shown)`. Messages from your own validators (field or
   model) are scrubbed of every secret value before they are shown or written to the termination log.
 - An empty value means *unset* for every type except `string` (SPEC §5): a defaulted variable takes its default, and
-  a required one is `missing_required`. Values are never trimmed. Integers, including the items of an `int` list,
+  a required one is `missing_required`. Values are never trimmed, and each type accepts only SPEC §5's forms (see
+  [Parsing is strict](#how-the-declaration-maps-to-the-contract)). Integers, including the items of an `int` list,
   must fit in 64 bits (`out_of_range` otherwise), and floats must be finite. A `json`-encoded `int` list must hold
   JSON integers (`[1,2]`, not `["1","2"]`). Malformed JSON is `invalid_type`, reported with every other problem.
 - Sources and precedence are pydantic-settings': constructor arguments, then environment variables, then a `.env`
   file if you set `env_file` (opt-in; real environment variables win), then config-file overlays, then any config
   files you add in `settings_customise_sources`, then defaults. docuconf reads the environment once and hands
   pydantic-settings that snapshot through `settings_customise_sources`; it never changes `os.environ`.
-- Variables not in the declaration are ignored, apart from the typo warning. Setting a deprecated variable logs a
-  warning.
+- Variables not in the declaration are ignored, apart from the typo warning. Setting a deprecated variable, or
+  supplying a deprecated file input, logs a warning that names it and its message, never its value.
+
+## Key sets
+
+A key set holds secret keys that are all valid at once, so a key can be rotated without an outage (SPEC §4.3, §6.1):
+webhook signatures, inbound API keys, JWT HMAC verification. Declare it as a `docuconf.KeySet`, with its bounds in
+`docuconf.Keys`:
+
+```python
+import hashlib
+import hmac
+from typing import Annotated
+
+from pydantic import Field
+
+from docuconf import DocuconfSettings, Keys, KeySet
+
+
+class Settings(DocuconfSettings):
+    webhook_keys: Annotated[KeySet, Keys(key_min_length=32, key_max_length=256)] = Field(
+        description="Keys that verify webhook signatures"
+    )
+
+
+def signed(settings: Settings, body: bytes, signature: bytes) -> bool:
+    # Tries every key, so the time taken does not say which one matched.
+    return settings.webhook_keys.verify(
+        lambda key: hmac.compare_digest(hmac.new(key, body, hashlib.sha256).digest(), signature)
+    )
+```
+
+During a rotation the platform sets `WEBHOOK_KEYS=old,new`. `keys` gives the keys in order (as `SecretStr`),
+`contains(candidate)` compares a presented key with every key in constant time, and `verify(check)` calls `check`
+with each key's bytes and does not stop at the first match. A key set is always secret: `repr()`, `str()`, logs and
+`model_dump(mode="json")` show `**********`, and no error message holds a key. Without `Keys`, a key set takes 1 or
+2 comma-separated keys; `Keys(encoding="json")` reads `["old","new"]` and `Keys(encoding="indexed")` reads
+`NAME__0`, `NAME__1`. At boot, the number of keys outside `min_keys`..`max_keys` is `too_few_items` or
+`too_many_items`, and a key outside `key_min_length`..`key_max_length` characters, or an empty key (a stray comma),
+is `out_of_range`. The generated docs (`docuconf docs`) print the rotation steps.
 
 ## Config-file overlays
 
@@ -590,8 +648,7 @@ starts with `vault:`, `op://` or `ref+` as `invalid_type`, naming the variable a
 ## Contract-first mode
 
 Without a settings class, `docuconf.load_contract` validates an environment against a contract given as JSON (export
-a hand-written `contract.cue` with `cue export contract.cue`) and returns the typed values, one attribute per
-variable:
+a hand-written `contract.cue` with `cue export contract.cue`) and returns the typed values, one attribute per input:
 
 ```python
 # contract_first.py
@@ -607,8 +664,15 @@ pydantic-settings class from the contract (`docuconf.contract_settings`) with th
 hand-written declaration would use, and loads it through the same checks as `docuconf.load`, so the two modes cannot
 drift apart. Violations raise `ConfigValidationError` and go to the termination log as usual. `json` variables are
 checked against their `schema` with the `jsonschema` extra; without it, schemas are not checked and a warning is
-logged. The mode loads variables only: a contract with `files` or `overlays` is a `DeclarationError`. Variable names
-are matched case-sensitively.
+logged. Variable names are matched case-sensitively.
+
+It loads the whole contract. File inputs (`config` files in JSON, YAML or TOML, checked against their `schema`; `tls`
+key pairs; `caBundle`s; PKCS#12 `keystore`s; `text` and `binary` files) are read from their paths under
+`DOCUCONF_FILE_ROOT` and checked exactly as in a declaration; a file input's attribute is its name with `_` for `-`,
+and `values.value("serving-tls")` takes the input's own name. Profiles and overlays are layered in SPEC §4.7's order:
+each variable's default, then the selected profile's (`profiles.selector` from the environment, else
+`profiles.default`), then the config-file `overlays` (each value read at its `configKey`, split on `keySeparator`, and
+checked like an env value), then the environment.
 
 ## Conformance
 
@@ -620,16 +684,26 @@ DOCUCONF_CONFORMANCE=../docuconf-go/conformance/cases.json DOCUCONF_REQUIRE_CONF
 ```
 
 Without `DOCUCONF_CONFORMANCE` it looks for `../docuconf-go/conformance/cases.json` and skips when the file is
-missing, unless `DOCUCONF_REQUIRE_CONFORMANCE=1` (as in CI) makes that a failure. The SDK supports both capability
-tags, `int64` (Python's `int` holds every 64-bit value) and `json-schema` (with the `jsonschema` package installed),
-so no case is skipped. Without `jsonschema`, the two `json-schema` cases are skipped.
+missing, unless `DOCUCONF_REQUIRE_CONFORMANCE=1` (as in CI) makes that a failure.
+
+**Capability tags.** The runner keeps an allow-list of the tags this SDK supports, and skips a case only when it
+requires a tag outside it, including one the runner does not know (SPEC §12). It supports every tag: `int64`
+(Python's `int` holds every 64-bit value), `json-schema`, `key-set`, `deprecated`, `strict-parsing`, `files`,
+`profiles` and `overlays`, so **no case is skipped**. `json-schema` needs the `jsonschema` extra, and `files` the
+`jsonschema`, `tls` and `yaml` extras, which CI installs; with `DOCUCONF_REQUIRE_CONFORMANCE=1`, a skipped case fails the suite.
+
+**Export.** `tests/fixtures/conformance_fixture.py` declares docuconf-go's shared export fixture
+(`conformance/export/fixture.yaml`), and `tests/test_export.py` exports it and compares it with
+`conformance/export/golden.cue` using the docuconf CLI (`docuconf conformance export --golden`). Set `DOCUCONF_CLI`
+to the CLI built from docuconf-go (`cd cmd/docuconf && go build`); `scripts/conformance.sh` builds it from the
+checkout.
 
 ## Not supported yet
 
 - JKS keystores (PKCS#12 only).
-- Profiles (SPEC §4.4). Values in baked-in config files are not exported as defaults, so give fields defaults in
-  Python if the platform need not set them.
-- File inputs and overlays in the contract-first mode, which loads variables only.
+- Profiles (SPEC §4.4) in a declaration: pydantic-settings has no profile files, so values in baked-in config files
+  are not exported as defaults; give fields defaults in Python if the platform need not set them. The contract-first
+  mode loads a contract's `profiles`.
 - Markdown documentation generation.
 - `AliasPath` aliases. A nested model without `env_nested_delimiter` is exported as one `json` variable.
 
@@ -650,6 +724,10 @@ The export tests run `cue vet -c` on generated contracts against the meta-schema
 or `$DOCUCONF_SPEC_CUE`, and for `cue` in `$CUE`, `~/go/bin/cue` or `PATH`; without them, those tests are skipped.
 The conformance runner reads the same checkout (see [Conformance](#conformance)).
 See [RELEASING.md](RELEASING.md) for publishing.
+
+## Security
+
+Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 
 ## Licence
 

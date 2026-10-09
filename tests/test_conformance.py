@@ -2,12 +2,18 @@
 
 The cases live in docuconf-go (``conformance/cases.json``). Point
 ``DOCUCONF_CONFORMANCE`` at that file, or check docuconf-go out next to this
-repository; ``DOCUCONF_REQUIRE_CONFORMANCE=1`` turns a missing file into a
-failure instead of a skip.
+repository; ``DOCUCONF_REQUIRE_CONFORMANCE=1`` turns a missing file, or a
+skipped case, into a failure.
+
+The runner keeps an allow-list of the capability tags this SDK supports
+(conformance/README.md). A case is skipped only when it requires a tag that
+is not on it, which includes a tag the runner does not know, so a new tag
+never runs against an SDK written before it.
 """
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
@@ -25,8 +31,18 @@ HERE = Path(__file__).parent
 CASES = Path(os.environ.get("DOCUCONF_CONFORMANCE") or HERE.parent.parent / "docuconf-go/conformance/cases.json")
 REQUIRED = os.environ.get("DOCUCONF_REQUIRE_CONFORMANCE") == "1"
 
-#: Capability tags (conformance/README.md) this SDK supports. json-schema needs the jsonschema extra.
-SUPPORTED = {"int64"} | ({"json-schema"} if importlib.util.find_spec("jsonschema") else set())
+_HAS_JSONSCHEMA = importlib.util.find_spec("jsonschema") is not None
+_HAS_CRYPTOGRAPHY = importlib.util.find_spec("cryptography") is not None
+_HAS_YAML = importlib.util.find_spec("yaml") is not None
+
+#: The capability tags (conformance/README.md) this SDK supports: an allow-list, never a deny-list.
+#: json-schema needs the jsonschema extra; files needs it too (config files are checked against their
+#: schema), the tls extra (certificates and PKCS#12 keystores) and the yaml extra. CI installs all three.
+SUPPORTED = {"int64", "key-set", "deprecated", "strict-parsing", "profiles", "overlays"}
+if _HAS_JSONSCHEMA:
+    SUPPORTED.add("json-schema")
+if _HAS_JSONSCHEMA and _HAS_CRYPTOGRAPHY and _HAS_YAML:
+    SUPPORTED.add("files")
 
 
 def _cases() -> list[dict[str, Any]]:
@@ -41,6 +57,10 @@ def _cases() -> list[dict[str, Any]]:
 ALL = _cases()
 
 
+def _unsupported(case: dict[str, Any]) -> list[str]:
+    return sorted(set(case.get("requires", [])) - SUPPORTED)
+
+
 def test_cases_file() -> None:
     if not CASES.is_file():
         if REQUIRED:
@@ -49,15 +69,40 @@ def test_cases_file() -> None:
     assert ALL, f"{CASES} holds no cases"
 
 
+def test_nothing_skipped() -> None:
+    """With DOCUCONF_REQUIRE_CONFORMANCE=1 (CI), every case runs: a skipped case fails the suite."""
+    skipped = {c["id"]: _unsupported(c) for c in ALL if _unsupported(c)}
+    if skipped and REQUIRED:
+        lines = "\n".join(f"  {cid}: requires {', '.join(tags)}" for cid, tags in sorted(skipped.items()))
+        pytest.fail(f"{len(skipped)} of {len(ALL)} conformance cases would be skipped:\n{lines}")
+    if skipped:
+        pytest.skip(f"{len(skipped)} of {len(ALL)} cases skipped (unsupported tags)")
+
+
 def _json(value: Any) -> Any:
     """A typed value as the JSON the case expects."""
     if isinstance(value, timedelta):
-        return to_go(value)
+        return to_go(value, signed=True)
     if isinstance(value, SecretStr):
         return value.get_secret_value()
+    if isinstance(value, docuconf.KeySet):
+        return [k.get_secret_value() for k in value.keys]
+    if isinstance(value, (docuconf.TlsKeyPair, docuconf.CaBundle, docuconf.Keystore, bytes, Path)):
+        return True  # a file input other than config and text: present
     if isinstance(value, list):
         return [_json(v) for v in value]
     return value
+
+
+def _write_files(root: Path, files: dict[str, dict[str, str]]) -> None:
+    """Each file of the case under ``root``, at its absolute path."""
+    for path, content in files.items():
+        target = root / path.lstrip("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if "base64" in content:
+            target.write_bytes(base64.b64decode(content["base64"]))
+        else:
+            target.write_bytes(content["text"].encode("utf-8"))
 
 
 def _same(got: Any, want: Any) -> bool:
@@ -77,13 +122,19 @@ def _same(got: Any, want: Any) -> bool:
 
 @pytest.mark.parametrize("case", ALL, ids=[c["id"] for c in ALL])
 def test_case(case: dict[str, Any], tmp_path: Path) -> None:
-    missing = sorted(set(case.get("requires", [])) - SUPPORTED)
+    missing = _unsupported(case)
     if missing:
         pytest.skip(f"requires {', '.join(missing)}")
     log = tmp_path / "termination-log"
+    # A new, empty file root for every case, files or not, so no case reads the machine's own files.
+    root = tmp_path / "root"
+    root.mkdir()
+    _write_files(root, case.get("files") or {})
     env: dict[str, str] = case["env"]
     try:
-        values = docuconf.load_contract(case["contract"], env, termination_log=str(log))
+        values = docuconf.load_contract(
+            case["contract"], {**env, "DOCUCONF_FILE_ROOT": str(root)}, termination_log=str(log)
+        )
     except docuconf.ConfigValidationError as e:
         if "errors" not in case:
             pytest.fail(f"{case['id']}: want values, got errors:\n{e}")
@@ -99,5 +150,5 @@ def test_case(case: dict[str, Any], tmp_path: Path) -> None:
     if "expect" not in case:
         pytest.fail(f"{case['id']}: want errors {case['errors']}, got values")
     for name, want in case["expect"].items():
-        got = _json(getattr(values, name))
+        got = _json(values.value(name))
         assert _same(got, want), f"{case['id']}: {name} is {got!r}, want {want!r}"

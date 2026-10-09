@@ -19,7 +19,7 @@ the three things the Python SDK gives an app:
 | `ALLOWED_ORIGINS` | list of strings, comma-separated | at least 1 item; default `http://localhost:3000` |
 | `REQUEST_TIMEOUT` | duration, ISO 8601 (`PT45S`) | `1s`–`5m`, default `30s` |
 | `WORKER_COUNT` | int | 1–64, default `4` |
-| `WEBHOOK_KEYS` | list of strings, comma-separated | secret, optional; 1–2 keys of 32–256 characters each |
+| `WEBHOOK_KEYS` | key set, comma-separated | secret (always), optional; 1–2 keys of 32–256 characters each |
 
 `GET /healthz` returns `ok`; `GET /config` returns the typed values as JSON, with secrets always shown as `***`, set or
 not. `POST /webhooks/payments` accepts a payment webhook signed with any key in `WEBHOOK_KEYS`.
@@ -58,14 +58,12 @@ it on every push.
 ## Rotate a key
 
 `WEBHOOK_KEYS` is a key set: `POST /webhooks/payments` accepts a body whose `X-Signature` header is the hex
-HMAC-SHA256 of the body under any key in the list (`verify` in [`app.py`](app.py)). It is declared as a list of
-`SecretStr`, so the list is secret in the contract and each key prints as `**********`. A variable is read once, at
-start, so a new key reaches the service only when the pods restart; with two keys valid at once, no webhook is turned
-away while that happens:
-
-1. Add the new key as the second item (`old,new` in the Secret), and roll out.
-2. Switch the sender to the new key.
-3. Remove the old key (`new`), and roll out.
+HMAC-SHA256 of the body under any key in the set. It is declared as a `docuconf.KeySet`, which is always secret: the
+contract type is `keySet`, and the set prints as `**********`. `verify` in [`app.py`](app.py) checks the signature
+with `KeySet.verify`, which tries every key, so the time taken does not say which one matched. A variable is read
+once, at start, so a new key reaches the service only when the pods restart; with two keys valid at once, no webhook
+is turned away while that happens. The generated docs ([`CONFIG.md`](CONFIG.md)) give the rotation steps: add the new
+key (`old,new` in the Secret) and roll out, switch the sender, then remove the old key and roll out.
 
 In the platform's values, the key set is a reference to one Secret key that holds `old,new` while rotating:
 
@@ -74,14 +72,14 @@ WEBHOOK_KEYS:
   secretKeyRef: {name: orders-webhooks, key: keys}
 ```
 
-The contract allows 1 or 2 keys of 32 to 256 characters each, so a trailing comma or a truncated key stops the service
-at boot instead of locking out the sender, without printing a key:
+The contract allows 1 or 2 keys of 32 to 256 characters each, so a trailing comma (an empty key) or a truncated key
+stops the service at boot instead of locking out the sender, without printing a key:
 
 ```console
 $ DATABASE_URL=postgres://orders:pw@localhost:5432/orders \
     WEBHOOK_KEYS=old-webhook-key-0123456789abcdef0123, .venv/bin/python app.py
 docuconf: 1 configuration problem:
-  - WEBHOOK_KEYS [out_of_range]: 1: should have at least 32 characters, has 0
+  - WEBHOOK_KEYS [out_of_range]: key 2 is empty
 ```
 
 [`test_app.py`](test_app.py) walks through a rotation (`.venv/bin/python -m pytest test_app.py`), and

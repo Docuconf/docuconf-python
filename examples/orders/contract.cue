@@ -55,17 +55,16 @@ contract.#Contract & {
 			default:     "30s"
 		}
 		WEBHOOK_KEYS: {
-			type:          "list"
-			description:   "Keys that verify the signature on incoming payment webhooks"
-			details:       "A webhook is accepted when it is signed with any key in the list, so the key can be rotated without turning\nwebhooks away. To rotate:\n\n 1. add the new key as the second item, and roll out;\n 2. switch the sender to the new key;\n 3. remove the old key, and roll out.\n\nEach key is 32 to 256 characters, so an empty or truncated key fails at boot. Without this variable, the service\nrejects every webhook."
-			secret:        true
-			items:         "string"
-			encoding:      "csv"
-			separator:     ","
-			minItems:      1
-			maxItems:      2
-			itemMinLength: 32
-			itemMaxLength: 256
+			type:         "keySet"
+			description:  "Keys that verify the signature on incoming payment webhooks"
+			details:      "A webhook is accepted when it is signed with any key in the set, so the key can be rotated without turning\nwebhooks away. An empty or truncated key fails at boot. Without this variable, the service rejects every webhook."
+			secret:       true
+			encoding:     "csv"
+			separator:    ","
+			minKeys:      1
+			maxKeys:      2
+			keyMinLength: 32
+			keyMaxLength: 256
 		}
 		WORKER_COUNT: {
 			type:        "int"

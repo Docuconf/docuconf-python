@@ -75,9 +75,13 @@ def test_the_contract_round_trips() -> None:
 
 
 def test_contracts_the_mode_cannot_load() -> None:
-    bad = {**CONTRACT, "files": {"tls": {"type": "tls", "description": "Serving key pair", "path": "/etc/tls"}}}
-    with pytest.raises(DeclarationError, match="variables only"):
+    bad = {**CONTRACT, "files": {"tls": {"type": "jks", "description": "Serving key pair", "path": "/etc/tls"}}}
+    with pytest.raises(DeclarationError, match="unknown type"):
         docuconf.load_contract(bad, {})
+    bad = {**CONTRACT, "vars": {"X": {"type": "int", "description": "Old", "required": True, "deprecated": {}}}}
+    with pytest.raises(DeclarationError, match="cannot be deprecated") as info:
+        docuconf.load_contract(bad, {})
+    assert "must say what to use instead" in str(info.value)
     bad = {**CONTRACT, "vars": {"X": {"type": "decimal", "description": "Not a type"}}}
     with pytest.raises(DeclarationError, match="unknown type"):
         docuconf.load_contract(bad, {})

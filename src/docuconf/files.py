@@ -256,10 +256,13 @@ def _load_text(r: FileResult, path: Path, data: bytes, m: TextFile, spec: FileSp
 # -- certificates -------------------------------------------------------------
 
 
-def parse_certificates(r: FileResult, data: bytes, label: str, code: ErrorCode) -> list[x509.Certificate] | None:
+def parse_certificates(
+    r: FileResult, data: bytes, label: str, code: ErrorCode, empty_code: ErrorCode | None = None
+) -> list[x509.Certificate] | None:
+    """The PEM certificates in ``data``: none at all is ``empty_code`` (default ``code``), a bad one ``code``."""
     blocks = _PEM_CERT.findall(data)
     if not blocks:
-        r.fail(code, f"{label} holds no PEM certificate")
+        r.fail(empty_code or code, f"{label} holds no PEM certificate")
         return None
     certs = []
     for i, block in enumerate(blocks):
@@ -364,15 +367,17 @@ def check_tls(
     now: datetime,
 ) -> tuple[list[x509.Certificate], Any] | None:
     before = len(r.violations)
-    chain = parse_certificates(r, cert_pem, "tls.crt", "certificate_invalid")
+    # A file with no PEM certificate or key at all is file_malformed; one that does not parse,
+    # certificate_invalid (SPEC §11.2 item 5).
+    chain = parse_certificates(r, cert_pem, "tls.crt", "certificate_invalid", "file_malformed")
     key = None
     try:
         key = serialization.load_pem_private_key(key_pem, password=None)
     except (ValueError, TypeError):
         # The parser's message could quote key material; keep it generic.
-        r.fail("certificate_invalid", "tls.key is not a readable, unencrypted PEM private key")
+        r.fail("file_malformed", "tls.key holds no readable, unencrypted PEM private key")
     except Exception:
-        r.fail("certificate_invalid", "tls.key is not a readable PEM private key")
+        r.fail("file_malformed", "tls.key holds no readable PEM private key")
     if chain is None:
         return None
     leaf = chain[0]
