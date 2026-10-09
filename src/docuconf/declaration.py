@@ -588,7 +588,7 @@ class _Builder:
                 problem("a secret must not have a default (SPEC §6)")
             else:
                 parts = (full_annotation, *fi.metadata)
-                target = Annotated[parts] if fi.metadata else full_annotation
+                target: Any = Annotated[parts] if fi.metadata else full_annotation
                 try:
                     TypeAdapter(target, config=self.ta_config).validate_python(py_default)
                 except PydanticValidationError as e:
