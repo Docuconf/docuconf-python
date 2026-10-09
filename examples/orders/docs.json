@@ -262,6 +262,56 @@
           ]
         },
         {
+          "name": "WEBHOOK_KEYS",
+          "kind": "var",
+          "type": "list",
+          "typeLabel": "list of strings",
+          "required": false,
+          "secret": true,
+          "description": "Keys that verify the signature on incoming payment webhooks",
+          "details": "A webhook is accepted when it is signed with any key in the list, so the key can be rotated without turning\nwebhooks away. To rotate:\n\n 1. add the new key as the second item, and roll out;\n 2. switch the sender to the new key;\n 3. remove the old key, and roll out.\n\nEach key is 32 to 256 characters, so an empty or truncated key fails at boot. Without this variable, the service\nrejects every webhook.",
+          "wire": {
+            "encoding": "csv",
+            "separator": ",",
+            "text": "the items joined by `,` with nothing around it, such as `a,b`",
+            "platform": "a `secretKeyRef` or `injected` reference, never the value"
+          },
+          "constraints": [
+            {
+              "rule": "itemCount",
+              "params": {
+                "maxItems": 2,
+                "minItems": 1
+              },
+              "text": "between 1 and 2 items"
+            },
+            {
+              "rule": "itemLength",
+              "params": {
+                "itemMaxLength": 256,
+                "itemMinLength": 32
+              },
+              "text": "each item between 32 and 256 characters (Unicode code points)"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "secretKeyRef",
+              "text": "a key of a Kubernetes Secret (`secretKeyRef`)"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "invalid_type",
+            "out_of_range",
+            "too_few_items",
+            "too_many_items"
+          ]
+        },
+        {
           "name": "WORKER_COUNT",
           "kind": "var",
           "type": "int",
@@ -346,6 +396,11 @@
       "code": "too_few_items",
       "meaning": "The list has fewer items than its minimum.",
       "fix": "Add items."
+    },
+    {
+      "code": "too_many_items",
+      "meaning": "The list has more items than its maximum.",
+      "fix": "Remove items."
     }
   ]
 }

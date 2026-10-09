@@ -6,10 +6,10 @@ This file lists every configuration input `orders` reads, from its docuconf cont
 
 ## Hard rules
 
-1. Never put a secret value in code, a `.env` file, a values file, a ConfigMap, an annotation, a commit, a log or a message. Supply a secret variable only as a `secretKeyRef` or `injected`, and a secret file only from a `secret`, `certificate` or `csi` source or `injected`. Secret inputs: `DATABASE_URL`.
+1. Never put a secret value in code, a `.env` file, a values file, a ConfigMap, an annotation, a commit, a log or a message. Supply a secret variable only as a `secretKeyRef` or `injected`, and a secret file only from a `secret`, `certificate` or `csi` source or `injected`. Secret inputs: `DATABASE_URL` and `WEBHOOK_KEYS`.
 2. Use each input's declared wire format when writing a raw environment value (a `.env` file, a shell, `docker run -e`): list and duration formats differ between apps. In a platform values file, write typed values instead (lists as lists, durations in Go syntax such as `90s`); docuconf renders the wire format.
 3. Validate before proposing a change: `docuconf vet -contract contract.cue -values values.yaml -files files.yaml` for platform values, and `docuconf check -contract contract.cue` in a running environment. Both print every problem and exit 1.
-4. Do not invent inputs. `orders` reads only the 6 environment variables and no files below; `vet` rejects a value for anything else. A new input needs a change to the app's declaration and a new contract export.
+4. Do not invent inputs. `orders` reads only the 7 environment variables and no files below; `vet` rejects a value for anything else. A new input needs a change to the app's declaration and a new contract export.
 5. Set every required input that has no default: `DATABASE_URL`.
 
 ## Using this config in code
@@ -110,6 +110,31 @@ client sees a reset rather than a `504`.
 
 The platform writes Go durations such as `45s`; docuconf converts them to ISO 8601 for pydantic.
 
+#### WEBHOOK_KEYS
+
+- kind: environment variable
+- type: `list` (list of strings)
+- required: no
+- secret: yes
+- constraint: between 1 and 2 items
+- constraint: each item between 32 and 256 characters (Unicode code points)
+- wire format: the items joined by `,` with nothing around it, such as `a,b`
+- in a values file: a `secretKeyRef` or `injected` reference, never the value
+- allowed sources: `secretKeyRef`, `injected`
+- boot errors: `invalid_type`, `out_of_range`, `too_few_items`, `too_many_items`
+
+Keys that verify the signature on incoming payment webhooks
+
+A webhook is accepted when it is signed with any key in the list, so the key can be rotated without turning
+webhooks away. To rotate:
+
+ 1. add the new key as the second item, and roll out;
+ 2. switch the sender to the new key;
+ 3. remove the old key, and roll out.
+
+Each key is 32 to 256 characters, so an empty or truncated key fails at boot. Without this variable, the service
+rejects every webhook.
+
 #### WORKER_COUNT
 
 - kind: environment variable
@@ -144,3 +169,4 @@ At boot the SDK reports every problem at once, one line each: `INPUT: message (c
 - `not_in_enum`: The value is not one of the allowed values. Fix: Use one of the listed values, spelled exactly as listed.
 - `invalid_scheme`: The URL's scheme is not one of the allowed schemes. Fix: Use a URL with an allowed scheme.
 - `too_few_items`: The list has fewer items than its minimum. Fix: Add items.
+- `too_many_items`: The list has more items than its maximum. Fix: Remove items.

@@ -418,6 +418,7 @@ has changed. A reload that fails its checks is logged and the old value is kept.
 | `Annotated[Model, JsonMaxLength(256)]` | `json` with `maxLength` |
 | a nested model with `env_nested_delimiter` | one variable per field, e.g. `APP_DB__HOST` |
 | `SecretStr`, `SecretBytes`, `pydantic.Secret[T]`, or `Annotated[T, Secret()]` | `secret: true` |
+| `Annotated[list[Annotated[SecretStr, Field(min_length=32)]], NoDecode, Csv()]`, a key set ([SPEC §6.1](https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md#61-rotation)) | `list` of `string`, `secret: true`, with `itemMinLength`; each key stays a `SecretStr` |
 | `Field(examples=...)`, `Field(deprecated=...)` | `examples`, `deprecated` |
 | `Annotated[T, Meta(group=..., replaced_by=..., config_key=...)]` | `group`, `deprecated.replacedBy`, `configKey` |
 | `Annotated[T, Exclude()]` | left out (for values from a secrets manager, say) |

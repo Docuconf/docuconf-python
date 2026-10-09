@@ -19,8 +19,10 @@ the three things the Python SDK gives an app:
 | `ALLOWED_ORIGINS` | list of strings, comma-separated | at least 1 item; default `http://localhost:3000` |
 | `REQUEST_TIMEOUT` | duration, ISO 8601 (`PT45S`) | `1s`–`5m`, default `30s` |
 | `WORKER_COUNT` | int | 1–64, default `4` |
+| `WEBHOOK_KEYS` | list of strings, comma-separated | secret, optional; 1–2 keys of 32–256 characters each |
 
-`GET /healthz` returns `ok`; `GET /config` returns the typed values as JSON, with the secret shown as `***`.
+`GET /healthz` returns `ok`; `GET /config` returns the typed values as JSON, with secrets always shown as `***`, set or
+not. `POST /webhooks/payments` accepts a payment webhook signed with any key in `WEBHOOK_KEYS`.
 
 ## Run it
 
@@ -34,7 +36,7 @@ $ DATABASE_URL=postgres://orders:pw@localhost:5432/orders .venv/bin/python app.p
 $ curl localhost:8080/healthz
 ok
 $ curl localhost:8080/config
-{"PORT": 8080, "LOG_LEVEL": "info", "DATABASE_URL": "***", "ALLOWED_ORIGINS": ["http://localhost:3000"], "REQUEST_TIMEOUT": "PT30S", "WORKER_COUNT": 4}
+{"PORT": 8080, "LOG_LEVEL": "info", "DATABASE_URL": "***", "ALLOWED_ORIGINS": ["http://localhost:3000"], "REQUEST_TIMEOUT": "PT30S", "WORKER_COUNT": 4, "WEBHOOK_KEYS": "***"}
 ```
 
 ## When the configuration is wrong
@@ -50,7 +52,41 @@ docuconf: 2 configuration problems:
 ```
 
 In Kubernetes the same text goes to `/dev/termination-log`, so `kubectl describe pod` shows it.
-[`smoke.sh`](smoke.sh) checks both runs (`PYTHON=.venv/bin/python ./smoke.sh`); CI runs it on every push.
+[`smoke.sh`](smoke.sh) checks both runs, and the webhook key set below (`PYTHON=.venv/bin/python ./smoke.sh`); CI runs
+it on every push.
+
+## Rotate a key
+
+`WEBHOOK_KEYS` is a key set: `POST /webhooks/payments` accepts a body whose `X-Signature` header is the hex
+HMAC-SHA256 of the body under any key in the list (`verify` in [`app.py`](app.py)). It is declared as a list of
+`SecretStr`, so the list is secret in the contract and each key prints as `**********`. A variable is read once, at
+start, so a new key reaches the service only when the pods restart; with two keys valid at once, no webhook is turned
+away while that happens:
+
+1. Add the new key as the second item (`old,new` in the Secret), and roll out.
+2. Switch the sender to the new key.
+3. Remove the old key (`new`), and roll out.
+
+In the platform's values, the key set is a reference to one Secret key that holds `old,new` while rotating:
+
+```yaml
+WEBHOOK_KEYS:
+  secretKeyRef: {name: orders-webhooks, key: keys}
+```
+
+The contract allows 1 or 2 keys of 32 to 256 characters each, so a trailing comma or a truncated key stops the service
+at boot instead of locking out the sender, without printing a key:
+
+```console
+$ DATABASE_URL=postgres://orders:pw@localhost:5432/orders \
+    WEBHOOK_KEYS=old-webhook-key-0123456789abcdef0123, .venv/bin/python app.py
+docuconf: 1 configuration problem:
+  - WEBHOOK_KEYS [out_of_range]: 1: should have at least 32 characters, has 0
+```
+
+[`test_app.py`](test_app.py) walks through a rotation (`.venv/bin/python -m pytest test_app.py`), and
+[`smoke.sh`](smoke.sh) posts webhooks signed with both keys. [docuconf-go's SPEC section
+6.1](https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md#61-rotation) covers rotation in general.
 
 ## Export the contract
 
