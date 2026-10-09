@@ -11,6 +11,7 @@ from .contract import ContractSettings, contract_settings, load_contract
 from .declaration import Declaration, declaration
 from .errors import ERROR_CODES, ConfigValidationError, DeclarationError, DocuconfError, DocuconfWarning, Violation
 from .export import contract_data, to_contract
+from .keyset import Keys, KeySet
 from .loader import DocuconfSettings, load, load_or_exit
 from .markers import (
     BinaryFile,
@@ -53,6 +54,8 @@ __all__ = [
     "Exclude",
     "IndexedList",
     "JsonMaxLength",
+    "KeySet",
+    "Keys",
     "Keystore",
     "KeystoreFile",
     "Meta",

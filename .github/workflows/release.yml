@@ -32,6 +32,8 @@ jobs:
           go-version: stable
           cache: false
       - run: go install cuelang.org/go/cmd/cue@v0.17.1
+      - name: Build the docuconf CLI
+        run: cd docuconf-go/cmd/docuconf && go build -o "$RUNNER_TEMP/docuconf" .
       - run: python -m pip install -e ".[tls,jsonschema]" pytest PyYAML fastapi httpx django
       - run: pytest
         env:
@@ -39,6 +41,8 @@ jobs:
           DOCUCONF_REQUIRE_VET: "1"
           DOCUCONF_CONFORMANCE: ${{ github.workspace }}/docuconf-go/conformance/cases.json
           DOCUCONF_REQUIRE_CONFORMANCE: "1"
+          DOCUCONF_CLI: ${{ runner.temp }}/docuconf
+          DOCUCONF_REQUIRE_CLI: "1"
 
   build:
     needs: test

@@ -11,6 +11,7 @@ import re
 import sys
 import warnings
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar, cast
@@ -28,7 +29,7 @@ from pydantic_settings import (
 )
 from typing_extensions import Self
 
-from . import _context
+from . import _context, durations
 from .declaration import _MISSING, REDACTING_TYPES, Declaration, VarSpec, declaration
 from .errors import (
     ConfigValidationError,
@@ -40,6 +41,7 @@ from .errors import (
     write_termination_log,
 )
 from .files import FileResult, load_file
+from .keyset import KeySet
 from .markers import compact_json
 from .overlays import is_wired, lenient, read_overlay, with_overlays
 from .values import _FileValue
@@ -58,6 +60,10 @@ _CODES: dict[str, ErrorCode] = {
     "enum": "not_in_enum",
     "url_scheme": "invalid_scheme",
     "schema_mismatch": "schema_mismatch",
+    "key_set_too_few": "too_few_items",
+    "key_set_too_many": "too_many_items",
+    "key_set_key_length": "out_of_range",
+    "key_set_type": "invalid_type",
 }
 # pydantic messages that never include the input, so are safe for secrets.
 _SAFE_FOR_SECRETS = (
@@ -77,6 +83,10 @@ _SAFE_FOR_SECRETS = (
         "json_invalid",
         "too_short",
         "too_long",
+        "key_set_too_few",
+        "key_set_too_many",
+        "key_set_key_length",
+        "key_set_type",
     }
 )
 
@@ -207,6 +217,24 @@ def _set_path(d: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
     d[path[-1]] = value
 
 
+def _has_path(d: Mapping[str, Any], path: tuple[str, ...]) -> bool:
+    return _lookup(d, path)[0]
+
+
+@dataclass(frozen=True)
+class Layer:
+    """A variable's value from below the environment (SPEC §4.4, §4.7), as the wire string it stands for."""
+
+    #: Where it comes from, for messages: ``overlay platform``.
+    source: str
+    #: The wire string, or None for a list given item by item.
+    raw: str | None = None
+    #: A list's items, each as its wire string.
+    items: list[str] | None = None
+    #: Already reported (a secret in an overlay, an object where a scalar belongs): skip the variable.
+    bad: bool = False
+
+
 #: Reference schemes of injectors that resolve env values when the process starts (SPEC §4.5.1).
 INJECTOR_SCHEMES = ("vault:", "op://", "ref+")
 
@@ -216,48 +244,102 @@ def unresolved_reference(raw: str) -> str | None:
     return next((s for s in INJECTOR_SCHEMES if raw.startswith(s)), None)
 
 
-def _precheck(v: VarSpec, raw: str, init: dict[str, Any], out: list[Violation], hide: set[str]) -> bool:
-    """SPEC §5 rules the host does not apply. Returns False if the var is handled.
+#: SPEC §5's exact grammars, which docuconf applies before pydantic's more lenient parsers.
+INT_WIRE = re.compile(r"[+-]?[0-9]+")
+FLOAT_WIRE = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 
-    Adds to ``hide`` the variables pydantic-settings must not see (malformed JSON).
+
+def _got(v: VarSpec, raw: str) -> str:
+    """`` (got '...')`` for a message, or nothing for a secret."""
+    return "" if v.secret else f" (got {_show(raw)})"
+
+
+def _invalid(v: VarSpec, out: list[Violation], message: str, where: str = "") -> bool:
+    out.append(Violation(v.name, "var", "invalid_type", message + where))
+    return False
+
+
+def _precheck(
+    v: VarSpec,
+    raw: str,
+    init: dict[str, Any],
+    out: list[Violation],
+    hide: set[str],
+    *,
+    items: list[str] | None = None,
+    where: str = "",
+) -> bool:
+    """SPEC §5 rules the host does not apply. Returns False if the var is handled (reported, or unset).
+
+    Each type accepts exactly SPEC §5's strings, whatever pydantic accepts on
+    its own (``1`` or ``yes`` for a bool, ``1_000`` or `` 5`` for an int,
+    ``inf`` for a float, ``P1W`` for an ISO 8601 duration), and nothing is
+    trimmed. ``items`` are a list's items when they do not come from one
+    string (an ``indexed`` list, or an overlay). Adds to ``hide`` the
+    variables pydantic-settings must not see (malformed JSON).
     """
-    if raw == "" and v.type != "string":
+    if raw == "" and v.type != "string" and items is None:
         # Empty means unset for every type but string.
         if v.required:
             out.append(Violation(v.name, "var", "missing_required", "required, but set to an empty string"))
         elif v.py_default is not _MISSING:
             _set_path(init, v.alias_loc, v.py_default)
         return False
+    if v.type == "bool":
+        if raw.lower() not in ("true", "false"):
+            return _invalid(v, out, f"must be true or false{_got(v, raw)}", where)
+        return True
     if v.type == "int":
-        try:
-            n = int(raw)
-        except ValueError:
-            return True
-        if not INT64_MIN <= n <= INT64_MAX:
-            out.append(Violation(v.name, "var", "out_of_range", "outside the 64-bit signed integer range"))
+        if not INT_WIRE.fullmatch(raw):
+            return _invalid(v, out, f"must be a base-10 integer{_got(v, raw)}", where)
+        if not INT64_MIN <= int(raw) <= INT64_MAX:
+            out.append(Violation(v.name, "var", "out_of_range", "outside the 64-bit signed integer range" + where))
             return False
+        # Older pydantic versions reject a leading +; give it the value docuconf has read.
+        _set_path(init, v.alias_loc, int(raw))
+        return True
     if v.type == "float":
+        if not FLOAT_WIRE.fullmatch(raw):
+            return _invalid(v, out, f"must be a decimal number{_got(v, raw)}", where)
+        if not math.isfinite(float(raw)):
+            return _invalid(v, out, "must be a finite number", where)
+        return True
+    if v.type == "duration":
+        encoding = v.attrs.get("encoding", "iso8601")
         try:
-            f = float(raw)
+            value = durations.parse(raw, encoding)
         except ValueError:
-            return True
-        if not math.isfinite(f):
-            out.append(Violation(v.name, "var", "invalid_type", "must be a finite number"))
-            return False
+            what, example = DURATION_EXAMPLES.get(encoding, ("a duration", "30s"))
+            msg = f"expected {what} like {example}{_got(v, raw)}"
+            if encoding == "iso8601" and not v.secret and _GO_DURATION.match(raw):
+                msg += '; to accept values like 30s, use Annotated[timedelta, docuconf.Duration("go")]'
+            return _invalid(v, out, msg, where)
+        if encoding == "iso8601":
+            # pydantic reads ISO 8601 itself, but its reader differs between versions; give it the value.
+            _set_path(init, v.alias_loc, value)
+        return True
     encoding = v.attrs.get("encoding")
-    if v.type == "json" or (v.type == "list" and encoding in ("json", "indexed")):
+    is_list = v.type in ("list", "keySet")
+    if items is None and (v.type == "json" or (is_list and encoding == "json")):
         try:
             data = json.loads(raw, parse_constant=_reject_constant)
         except ValueError:
-            out.append(Violation(v.name, "var", "invalid_type", "not valid JSON"))
+            out.append(Violation(v.name, "var", "invalid_type", "not valid JSON" + where))
             hide.update(v.env_names)
             return False
-        if v.type == "json" and not _check_json_length(v, raw, "", out):
+        if v.type == "json" and not _check_json_length(v, raw, where, out):
             return False
         if v.type == "list" and v.attrs.get("items") == "int" and isinstance(data, list):
-            return _check_int_items(v, data, out, strict=encoding == "json")
-    if v.type == "list" and encoding == "csv" and v.attrs.get("items") == "int":
-        return _check_int_items(v, raw.split(v.attrs.get("separator", ",")), out, strict=False)
+            return _check_int_items(v, data, out, strict=True, where=where)
+        return True
+    if v.type == "list" and v.attrs.get("items") == "int":
+        if items is None and encoding == "csv":
+            items = raw.split(v.attrs.get("separator", ","))
+        if items is not None:
+            if not _check_int_items(v, items, out, strict=False, where=where):
+                return False
+            # As for an int: the items as docuconf read them, signs and leading zeros included.
+            _set_path(init, v.alias_loc, [int(x) for x in items])
     return True
 
 
@@ -278,19 +360,21 @@ def _check_json_length(v: VarSpec, wire: str, where: str, out: list[Violation]) 
     return False
 
 
-def _check_int_items(v: VarSpec, items: list[Any], out: list[Violation], *, strict: bool) -> bool:
-    """Items of an int list: JSON integers (``strict``), and within 64 bits (SPEC §5)."""
+def _check_int_items(v: VarSpec, items: list[Any], out: list[Violation], *, strict: bool, where: str = "") -> bool:
+    """Items of an int list: JSON integers (``strict``) or base-10 strings, within 64 bits (SPEC §5)."""
     for i, item in enumerate(items):
         if isinstance(item, str) and not strict:
-            try:
-                item = int(item)
-            except ValueError:
-                continue  # pydantic reports it
+            if not INT_WIRE.fullmatch(item):
+                out.append(Violation(v.name, "var", "invalid_type", f"item {i} is not a base-10 integer{where}"))
+                return False
+            item = int(item)
         if not isinstance(item, int) or isinstance(item, bool):
-            out.append(Violation(v.name, "var", "invalid_type", f"item {i} is not an integer"))
+            out.append(Violation(v.name, "var", "invalid_type", f"item {i} is not an integer{where}"))
             return False
         if not INT64_MIN <= item <= INT64_MAX:
-            out.append(Violation(v.name, "var", "out_of_range", f"item {i} is outside the 64-bit signed integer range"))
+            out.append(
+                Violation(v.name, "var", "out_of_range", f"item {i} is outside the 64-bit signed integer range{where}")
+            )
             return False
     return True
 
@@ -401,7 +485,7 @@ def _violations_from(
             seen.add(key)
             msg = _message(v, err, nested, raws.get(v.name))
             if v.name in origin and code != "missing_required":
-                msg += f" (from overlay {origin[v.name]})"
+                msg += f" (from {origin[v.name]})"
             out.append(Violation(v.name, "var", code, msg))
         elif err["type"] == "missing" and (
             nested_required := [
@@ -463,6 +547,21 @@ def _url_secrets(raw: str) -> list[str]:
     return out
 
 
+def _secret_items(v: VarSpec, raw: str | None, env: Env) -> list[str]:
+    encoding = v.attrs.get("encoding")
+    if encoding == "indexed":
+        return env.indexed(v.env_names)[0] or []
+    if not raw:
+        return []
+    if encoding == "json":
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return []
+        return [x for x in data if isinstance(x, str)] if isinstance(data, list) else []
+    return raw.split(v.attrs.get("separator", ","))
+
+
 def secret_values(decl: Declaration, env: Env, files: Mapping[str, Any] | None = None) -> list[str]:
     """Every secret value docuconf read: secret variables as set, and the contents of secret text files."""
     out: list[str] = []
@@ -472,6 +571,9 @@ def secret_values(decl: Declaration, env: Env, files: Mapping[str, Any] | None =
             if raw:
                 out.append(raw)
                 out.extend(_url_secrets(raw))
+            if v.type in ("list", "keySet"):
+                # Each key of a key set (or item of a secret list) is a secret on its own.
+                out.extend(_secret_items(v, raw, env))
     for f in decl.files:
         value = (files or {}).get(f.init_key)
         if f.secret and isinstance(value, str):
@@ -489,35 +591,105 @@ def _lookup(data: Mapping[str, Any], path: tuple[str, ...]) -> tuple[bool, Any]:
     return True, cur
 
 
-def _precheck_native(v: VarSpec, value: Any, overlay: str, out: list[Violation]) -> bool:
-    """SPEC §5 number rules for a typed value from an overlay. Returns False if the var is handled."""
-    where = f" (from overlay {overlay})"
-    is_int = v.type == "int" and isinstance(value, int) and not isinstance(value, bool)
-    if is_int and not INT64_MIN <= value <= INT64_MAX:
-        out.append(Violation(v.name, "var", "out_of_range", "outside the 64-bit signed integer range" + where))
-        return False
-    if v.type == "float" and isinstance(value, float) and not math.isfinite(value):
-        out.append(Violation(v.name, "var", "invalid_type", "must be a finite number" + where))
-        return False
-    if v.type == "json" and not isinstance(value, str):
-        # Not a string in an overlay: measured as the compact JSON the platform renders (SPEC §4.3).
+def _kind(x: Any) -> str:
+    if isinstance(x, Mapping):
+        return "an object"
+    if isinstance(x, list):
+        return "a list"
+    return f"a {type(x).__name__}"
+
+
+def scalar_text(x: Any) -> str | None:
+    """A native scalar from a config file as the env value it stands for (SPEC §4.7), or None if not a scalar.
+
+    A string as it is, a bool as ``true`` or ``false``, a number with an
+    integral value as an integer (``50.0`` is ``50``), any other number in
+    shortest round-trip decimal.
+    """
+    if isinstance(x, str):
+        return x
+    if isinstance(x, bool):
+        return "true" if x else "false"
+    if isinstance(x, int):
+        return str(x)
+    if isinstance(x, float):
+        if math.isfinite(x) and x == math.trunc(x) and abs(x) < 2**63:
+            return str(int(x))
+        return repr(x)
+    return None
+
+
+def wire_value(v: VarSpec, value: Any) -> tuple[str | None, list[str] | None, str | None]:
+    """A native overlay value as ``(raw, items, problem)``: the wire string, or a list's items, or what is wrong.
+
+    A ``json`` variable's value is its compact JSON; a list's items are each
+    converted like a scalar; an object or list where a scalar belongs is a
+    problem (``invalid_type``).
+    """
+    if v.type == "json":
         try:
-            wire = compact_json(value)
+            return compact_json(value), None, None
         except (TypeError, ValueError):
-            return True  # pydantic reports it
-        return _check_json_length(v, wire, where, out)
-    return True
+            return None, None, f"is {_kind(value)}, which is not JSON"
+    if v.type in ("list", "keySet"):
+        if not isinstance(value, list):
+            return None, None, f"is {_kind(value)}, not a list"
+        items: list[str] = []
+        for i, x in enumerate(value):
+            text = scalar_text(x)
+            if text is None:
+                return None, None, f"item {i} is {_kind(x)}, not a scalar"
+            items.append(text)
+        return None, items, None
+    text = scalar_text(value)
+    if text is None:
+        return None, None, f"is {_kind(value)}, not a scalar"
+    return text, None, None
+
+
+def _precheck_native(
+    v: VarSpec, value: Any, overlay: str, out: list[Violation], init: dict[str, Any], hide: set[str]
+) -> bool:
+    """SPEC §4.7 and §5 rules for a native value from an overlay. Returns False if the var is handled.
+
+    The value is checked as the wire string it stands for, exactly like an env
+    value; pydantic then binds the native value, as pydantic-settings layers it.
+    """
+    where = f" (from overlay {overlay})"
+    if v.secret:
+        # Never take, or print, a secret from an overlay: it is a ConfigMap (SPEC §4.7).
+        out.append(
+            Violation(v.name, "var", "invalid_type", f"is secret, but overlay {overlay} sets it; use the environment")
+        )
+        return False
+    if value is None:
+        return True  # null is unset
+    raw, items, problem = wire_value(v, value)
+    if problem is not None:
+        out.append(Violation(v.name, "var", "invalid_type", problem + where))
+        return False
+    if v.type == "json":
+        # Not a string in an overlay: measured as the compact JSON the platform renders (SPEC §4.3).
+        return isinstance(value, str) or _check_json_length(v, raw or "", where, out)
+    if items is not None:
+        return _precheck(v, json.dumps(items), init, out, hide, items=items, where=where)
+    return _precheck(v, raw or "", init, out, hide, where=where)
 
 
 def _first_line(e: Exception) -> str:
     return str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
 
 
-def _deprecated(v: VarSpec) -> None:
+def _deprecated(v: VarSpec, source: str | None = None) -> None:
+    """Warn that a deprecated variable is set (SPEC §11.2), naming it and its message, never its value."""
     if "deprecated" in v.common:
-        dep = v.common["deprecated"]
-        repl = f"; use {dep['replacedBy']}" if "replacedBy" in dep else ""
-        log.warning("docuconf: %s is deprecated: %s%s", v.name, dep["message"], repl)
+        warn_deprecated(v.name, "variable", v.common["deprecated"], source)
+
+
+def warn_deprecated(name: str, kind: str, dep: Mapping[str, Any], source: str | None = None) -> None:
+    repl = f" Use {dep['replacedBy']} instead." if "replacedBy" in dep else ""
+    where = f" (set in {source})" if source else ""
+    log.warning("docuconf: deprecated %s %s is set%s: %s%s", kind, name, where, dep["message"], repl)
 
 
 def build(
@@ -530,11 +702,15 @@ def build(
     *,
     warn: bool = True,
     into: S | None = None,
+    layers: Mapping[str, Layer] | None = None,
 ) -> tuple[S | None, list[Violation]]:
     """Check the variables and overlays, then instantiate ``cls``; file inputs are already loaded.
 
     With ``into``, a ``DocuconfSettings`` object being initialised (``Settings()``), that object is filled in.
+    ``layers`` are values from below the environment that the settings class does not read itself (the
+    contract-first mode's overlays): a variable the environment leaves unset takes its layer's value.
     """
+    layers = layers or {}
     violations: list[Violation] = []
     kwargs: dict[str, Any] = {}
     skip = set(file_fields)
@@ -548,11 +724,11 @@ def build(
         overlay_data.append((o.name, data))
 
     origin: dict[str, str] = {}
-    indexed: dict[str, list[str]] = {}
     raws: dict[str, str] = {}
     for v in decl.vars:
         raw = env.first(v.env_names)
-        if v.type == "list" and v.attrs.get("encoding") == "indexed":
+        items: list[str] | None = None
+        if v.type in ("list", "keySet") and v.attrs.get("encoding") == "indexed":
             # pydantic-settings cannot read NAME__0, NAME__1...: docuconf gathers the items and passes them in.
             # NAME itself is not part of the list, so pydantic-settings must not read it either.
             hide.update(v.env_names)
@@ -563,8 +739,31 @@ def build(
                 skip.add(v.name)
                 continue
             raw = None if items is None else json.dumps(items)
-            if items is not None:
-                indexed[v.name] = items
+        unset = raw is None or (raw == "" and v.type != "string")
+        layer = layers.get(v.name)
+        if layer is not None and not unset:
+            if warn:
+                log.warning(
+                    "docuconf: %s is set in the environment and in %s; the environment wins", v.name, layer.source
+                )
+            layer = None
+        if layer is not None:
+            # A value from below the environment (contract-first overlays), checked exactly like an env value.
+            if layer.bad:
+                skip.add(v.name)
+                continue
+            if warn:
+                _deprecated(v, layer.source)
+            origin[v.name] = layer.source
+            raw, items = (layer.raw or "", None) if layer.items is None else (json.dumps(layer.items), layer.items)
+            where = f" (from {layer.source})"
+            if not v.secret:
+                raws[v.name] = raw
+            if not _precheck(v, raw, kwargs, violations, hide, items=items, where=where):
+                skip.add(v.name)
+            elif not _has_path(kwargs, v.alias_loc):
+                _set_path(kwargs, v.alias_loc, items if items is not None else raw)
+            continue
         in_overlay = None
         for name, data in overlay_data:
             found, value = _lookup(data, v.alias_loc)
@@ -576,10 +775,10 @@ def build(
         if raw is None:
             if in_overlay is None:
                 continue
-            origin[v.name] = in_overlay[0]
+            origin[v.name] = f"overlay {in_overlay[0]}"
             if warn:
-                _deprecated(v)
-            if not _precheck_native(v, in_overlay[1], in_overlay[0], violations):
+                _deprecated(v, f"overlay {in_overlay[0]}")
+            if not _precheck_native(v, in_overlay[1], in_overlay[0], violations, kwargs, hide):
                 skip.add(v.name)
             continue
         if in_overlay is not None and warn:
@@ -590,10 +789,15 @@ def build(
             _deprecated(v)
         if raw == "" and v.type != "string" and in_overlay is not None:
             # Empty means unset (SPEC §5), so the overlay's value applies.
-            origin[v.name] = in_overlay[0]
-            _set_path(kwargs, v.alias_loc, in_overlay[1])
+            origin[v.name] = f"overlay {in_overlay[0]}"
+            if _precheck_native(v, in_overlay[1], in_overlay[0], violations, kwargs, hide):
+                _set_path(kwargs, v.alias_loc, in_overlay[1])
+            else:
+                skip.add(v.name)
             continue
         scheme = unresolved_reference(raw) if v.secret else None
+        if scheme is None and v.secret and items:
+            scheme = next((s for s in map(unresolved_reference, items) if s), None)
         if scheme is not None:
             # SPEC §11.2: the injector did not run. Name the scheme, never the value.
             violations.append(
@@ -606,10 +810,11 @@ def build(
             )
             skip.add(v.name)
             continue
-        if not _precheck(v, raw, kwargs, violations, hide) and violations and violations[-1].input == v.name:
-            skip.add(v.name)
-        elif v.name in indexed:
-            _set_path(kwargs, v.alias_loc, indexed[v.name])
+        if not _precheck(v, raw, kwargs, violations, hide, items=items):
+            if violations and violations[-1].input == v.name:
+                skip.add(v.name)
+        elif items is not None and not _has_path(kwargs, v.alias_loc):
+            _set_path(kwargs, v.alias_loc, items)
 
     kwargs.update(file_kwargs)
     kwargs.update(init)
@@ -780,6 +985,30 @@ def load_or_exit(cls: type[S], **kwargs: Any) -> S:
     raise SystemExit(1)
 
 
+def load_files(
+    decl: Declaration, environment: Env, now: datetime | None = None
+) -> tuple[list[FileResult], dict[str, Any], set[str], list[Violation]]:
+    """Read and check every file input: the results, the settings kwargs, the fields they fill, the violations."""
+    results: list[FileResult] = []
+    file_kwargs: dict[str, Any] = {}
+    file_fields: set[str] = set()
+    violations: list[Violation] = []
+    for f in decl.files:
+        r = load_file(f, environment, now=now or datetime.now(timezone.utc), root=environment.file_root)
+        results.append(r)
+        violations.extend(r.violations)
+        file_fields.add(f.field_name)
+        file_fields.add(f.init_key)
+        if r.value is not None:
+            file_kwargs[f.init_key] = r.value
+        elif f.py_default is not _MISSING:
+            file_kwargs[f.init_key] = f.py_default
+        dep = f.contract_fields.get("deprecated")
+        if dep is not None and r.present and r.ok:
+            warn_deprecated(f.name, "file input", dep)
+    return results, file_kwargs, file_fields, violations
+
+
 def _adopt(into: BaseSettings, other: BaseSettings) -> None:
     for attr in ("__dict__", "__pydantic_fields_set__", "__pydantic_extra__", "__pydantic_private__"):
         object.__setattr__(into, attr, getattr(other, attr))
@@ -822,21 +1051,7 @@ def _load(
         termination_log = False
     for hint in typo_hints(decl, environment):
         _warn(hint)
-    violations: list[Violation] = []
-    file_kwargs: dict[str, Any] = {}
-    file_fields: set[str] = set()
-
-    results: list[FileResult] = []
-    for f in decl.files:
-        r = load_file(f, environment, now=now or datetime.now(timezone.utc), root=environment.file_root)
-        results.append(r)
-        violations.extend(r.violations)
-        file_fields.add(f.field_name)
-        file_fields.add(f.init_key)
-        if r.value is not None:
-            file_kwargs[f.init_key] = r.value
-        elif f.py_default is not _MISSING:
-            file_kwargs[f.init_key] = f.py_default
+    results, file_kwargs, file_fields, violations = load_files(decl, environment, now)
 
     settings, more = build(cls, decl, environment, file_kwargs, file_fields, init, into=into)
     violations.extend(more)
@@ -873,7 +1088,7 @@ class _RedactSecrets:
 
 
 #: Values whose repr() never shows a secret: pydantic's secret types, docuconf's file values, paths.
-_SELF_REDACTING: tuple[type, ...] = (*REDACTING_TYPES, _FileValue, Path)
+_SELF_REDACTING: tuple[type, ...] = (*REDACTING_TYPES, _FileValue, Path, KeySet)
 
 
 class _DocuconfMeta(ModelMetaclass):

@@ -114,24 +114,23 @@ Keys that verify the signature on incoming payment webhooks
 
 | Property | Value |
 |---|---|
-| Type | `list` (list of strings) |
+| Type | `keySet` (key set) |
 | Required | no |
 | Secret | yes: never write its value in code, docs or a values file |
-| Constraints | between 1 and 2 items; each item between 32 and 256 characters (Unicode code points) |
-| Wire format | the items joined by `,` with nothing around it, such as `a,b` |
+| Constraints | between 1 and 2 keys; each key between 32 and 256 characters (Unicode code points) |
+| Wire format | the keys joined by `,`, such as `old,new` during a rotation; keys are never trimmed, and an empty key is never valid |
 | In a values file | a `secretKeyRef` or `injected` reference, never the value |
 | Sources | `secretKeyRef`, `injected` |
 | Boot errors | `invalid_type`, `out_of_range`, `too_few_items`, `too_many_items` |
 
-A webhook is accepted when it is signed with any key in the list, so the key can be rotated without turning
-webhooks away. To rotate:
+**Rotation.** The app accepts every key in the set, so a key is rotated without an outage, in three steps. The platform cannot check that a rollout keeps a key in common with the previous one, so follow them in order:
 
- 1. add the new key as the second item, and roll out;
- 2. switch the sender to the new key;
- 3. remove the old key, and roll out.
+1. add the new key to the set, and roll out;
+2. switch the sender (the side that signs or presents the key) to the new key;
+3. remove the old key from the set, and roll out.
 
-Each key is 32 to 256 characters, so an empty or truncated key fails at boot. Without this variable, the service
-rejects every webhook.
+A webhook is accepted when it is signed with any key in the set, so the key can be rotated without turning
+webhooks away. An empty or truncated key fails at boot. Without this variable, the service rejects every webhook.
 
 ### `WORKER_COUNT`
 
@@ -167,8 +166,8 @@ At boot the SDK checks every input and reports all problems together, one line e
 |---|---|---|
 | `missing_required` | A required input is not set, and has no default. | Set it through one of its allowed sources. |
 | `invalid_type` | The value does not parse as the input's type in its wire format, or a secret still holds an unresolved injector reference (`vault:`, `op://`, `ref+`). | Write the value in the input's wire format. For an injected secret, make sure the injector runs. |
-| `out_of_range` | A number, duration, length or list item is outside the input's bounds. | Use a value within the input's constraints. |
+| `out_of_range` | A number, duration, length, list item or key is outside the input's bounds; an empty key always is. | Use a value within the input's constraints. |
 | `not_in_enum` | The value is not one of the allowed values. | Use one of the listed values, spelled exactly as listed. |
 | `invalid_scheme` | The URL's scheme is not one of the allowed schemes. | Use a URL with an allowed scheme. |
-| `too_few_items` | The list has fewer items than its minimum. | Add items. |
-| `too_many_items` | The list has more items than its maximum. | Remove items. |
+| `too_few_items` | The list has fewer items than its minimum, or the key set fewer keys. | Add items, or keys. |
+| `too_many_items` | The list has more items than its maximum, or the key set more keys. | Remove items, or keys: a key set holds the old key only until the rotation is done. |

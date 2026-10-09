@@ -20,6 +20,7 @@ import docuconf
 from docuconf import Csv, DeclarationError, DocuconfSettings, Keystore, KeystoreFile, TextFile, cli
 from docuconf.durations import format_go_duration, parse_go_duration, to_go
 from tests.conftest import find_cue
+from tests.fixtures.conformance_fixture import FixtureSettings
 from tests.fixtures.sample_settings import GatewaySettings
 
 HERE = Path(__file__).parent
@@ -97,6 +98,31 @@ def test_header_and_metadata() -> None:
         "sdk": "docuconf-pydantic",
         "version": docuconf.__version__,
     }
+
+
+# The shared export fixture (SPEC §11.2 item 3): docuconf-go's golden contract, compared by its CLI.
+_CASES = Path(os.environ.get("DOCUCONF_CONFORMANCE") or HERE.parent.parent / "docuconf-go/conformance/cases.json")
+SHARED_GOLDEN = Path(os.environ.get("DOCUCONF_EXPORT_GOLDEN") or _CASES.parent / "export/golden.cue")
+#: The Go CLI (cmd/docuconf in docuconf-go); `docuconf` on PATH is this package's own command.
+DOCUCONF_CLI = os.environ.get("DOCUCONF_CLI")
+
+
+def test_shared_export_fixture(tmp_path: Path) -> None:
+    """The fixture in conformance/export/fixture.yaml, declared in tests/fixtures/conformance_fixture.py, exports
+    to golden.cue as data (docuconf conformance export --golden)."""
+    if not DOCUCONF_CLI or not SHARED_GOLDEN.is_file():
+        if os.environ.get("DOCUCONF_REQUIRE_CLI") == "1":
+            pytest.fail(f"DOCUCONF_REQUIRE_CLI=1, but DOCUCONF_CLI={DOCUCONF_CLI!r} or {SHARED_GOLDEN} is missing")
+        pytest.skip("set DOCUCONF_CLI to the docuconf-go CLI, and DOCUCONF_CONFORMANCE (or DOCUCONF_EXPORT_GOLDEN)")
+    assert docuconf.declaration(FixtureSettings).warnings == []
+    exported = tmp_path / "exported.cue"
+    exported.write_text(docuconf.to_contract(FixtureSettings, app_version="1.0.0"))
+    r = subprocess.run(
+        [DOCUCONF_CLI, "conformance", "export", "--golden", str(SHARED_GOLDEN), str(exported)],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
 
 
 @needs_cue

@@ -14,10 +14,7 @@ from typing import Annotated, ClassVar, Literal
 from pydantic import Field, SecretStr
 from pydantic_settings import NoDecode
 
-from docuconf import Csv, DocuconfSettings, Url
-
-# One webhook key: a secret of 32 to 256 characters.
-WebhookKey = Annotated[SecretStr, Field(min_length=32, max_length=256)]
+from docuconf import Csv, DocuconfSettings, Keys, KeySet, Url
 
 
 # DocuconfSettings is pydantic-settings' BaseSettings, whose constructor runs docuconf's checks:
@@ -51,33 +48,25 @@ class Settings(DocuconfSettings):
     The platform writes Go durations such as ``45s``; docuconf converts them to ISO 8601 for pydantic.
     """
     worker_count: int = Field(4, ge=1, le=64, description="Workers processing orders")
-    # A list of SecretStr is a secret list: each key prints as ********** (SPEC §6.1).
-    webhook_keys: Annotated[list[WebhookKey], NoDecode, Csv()] | None = Field(
-        None, min_length=1, max_length=2, description="Keys that verify the signature on incoming payment webhooks"
+    # A key set: 1 or 2 keys (the defaults) of 32 to 256 characters, always secret. Each key prints as **********.
+    webhook_keys: Annotated[KeySet, Keys(key_min_length=32, key_max_length=256)] | None = Field(
+        None, description="Keys that verify the signature on incoming payment webhooks"
     )
-    """A webhook is accepted when it is signed with any key in the list, so the key can be rotated without turning
-    webhooks away. To rotate:
-
-     1. add the new key as the second item, and roll out;
-     2. switch the sender to the new key;
-     3. remove the old key, and roll out.
-
-    Each key is 32 to 256 characters, so an empty or truncated key fails at boot. Without this variable, the service
-    rejects every webhook.
+    """A webhook is accepted when it is signed with any key in the set, so the key can be rotated without turning
+    webhooks away. An empty or truncated key fails at boot. Without this variable, the service rejects every webhook.
     """
 
 
-def verify(keys: list[SecretStr] | None, body: bytes, signature: str) -> bool:
+def verify(keys: KeySet | None, body: bytes, signature: str) -> bool:
     """Whether ``signature``, the hex HMAC-SHA256 of ``body``, was made with any of ``keys``.
 
     Accepting every key in the set is what lets a key be rotated: during the overlap the old and the new key both work.
+    ``KeySet.verify`` tries every key, so the time taken does not say which one matched.
     """
-    ok = False
-    for key in keys or []:
-        want = hmac.new(key.get_secret_value().encode(), body, hashlib.sha256).hexdigest()
-        # Check every key, so the time taken does not say which one matched.
-        ok = hmac.compare_digest(want.encode(), signature.lower().encode()) or ok
-    return ok
+    if keys is None:
+        return False
+    want = signature.lower().encode()
+    return keys.verify(lambda key: hmac.compare_digest(hmac.new(key, body, hashlib.sha256).hexdigest().encode(), want))
 
 
 def public_config(settings: Settings) -> dict[str, object]:

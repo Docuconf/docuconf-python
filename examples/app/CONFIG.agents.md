@@ -130,7 +130,8 @@ Upstream timeout
 - contents: a JSON file, read at the path
 - reload: `restart`: the app reads the file at startup; a changed source needs a rollout
 - constraint: matches the JSON Schema in the contract
-- schema: `{"properties":{"burst":{"default":0,"minimum":0,"title":"Burst","type":"integer"},"per_minute":{"minimum":1,"title":"Per Minute","type":"integer"}},"required":["per_minute"],"title":"Rates","type":"object"}`
+- field `burst`: integer, optional, default `0`, at least 0
+- field `per_minute`: integer, required, at least 1
 - allowed sources: `inline`, `configMap`, `secret`, `csi`, `image`, `injected` (the injector writes the file at the path)
 - boot errors: `file_missing`, `file_unreadable`, `file_malformed`, `schema_mismatch`
 
@@ -172,7 +173,7 @@ At boot the SDK reports every problem at once, one line each: `INPUT: message (c
 
 - `missing_required`: A required input is not set, and has no default. Fix: Set it through one of its allowed sources.
 - `invalid_type`: The value does not parse as the input's type in its wire format, or a secret still holds an unresolved injector reference (`vault:`, `op://`, `ref+`). Fix: Write the value in the input's wire format. For an injected secret, make sure the injector runs.
-- `out_of_range`: A number, duration, length or list item is outside the input's bounds. Fix: Use a value within the input's constraints.
+- `out_of_range`: A number, duration, length, list item or key is outside the input's bounds; an empty key always is. Fix: Use a value within the input's constraints.
 - `not_in_enum`: The value is not one of the allowed values. Fix: Use one of the listed values, spelled exactly as listed.
 - `invalid_scheme`: The URL's scheme is not one of the allowed schemes. Fix: Use a URL with an allowed scheme.
 - `file_missing`: The file is not at its path. Fix: Give the input a source, and check that it is mounted at the declared path (or that its path variable points at it).
