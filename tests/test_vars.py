@@ -443,6 +443,53 @@ def test_values_above_their_lengths_are_out_of_range() -> None:
     assert length_codes({"BRANCHES": "😀😀😀😀😀"}) == {"BRANCHES": ["out_of_range"]}
 
 
+# One webhook key: a secret of 32 to 256 characters.
+WebhookKey = Annotated[SecretStr, Field(min_length=32, max_length=256)]
+
+
+class KeySetSettings(DocuconfSettings):
+    """A dual-key secret (SPEC §6.1): a list of SecretStr, each item bounded."""
+
+    webhook_keys: Annotated[list[WebhookKey], NoDecode, Csv()] | None = Field(
+        None, min_length=1, max_length=2, description="Keys that verify webhook signatures"
+    )
+
+
+def test_a_list_of_secret_str_is_a_secret_list_of_strings() -> None:
+    var = docuconf.contract_data(KeySetSettings, name="svc")["vars"]["WEBHOOK_KEYS"]
+    assert var == {
+        "type": "list",
+        "description": "Keys that verify webhook signatures",
+        "secret": True,
+        "items": "string",
+        "encoding": "csv",
+        "separator": ",",
+        "minItems": 1,
+        "maxItems": 2,
+        "itemMinLength": 32,
+        "itemMaxLength": 256,
+    }
+
+
+def test_a_key_set_loads_each_key_as_a_secret_and_never_prints_one() -> None:
+    old, new = "o" * 32, "n" * 32
+    s = KeySetSettings.load(env={"WEBHOOK_KEYS": f"{old},{new}"})
+    assert s.webhook_keys is not None
+    assert [k.get_secret_value() for k in s.webhook_keys] == [old, new]
+    assert old not in repr(s) and old not in str(s.webhook_keys)
+    assert KeySetSettings.load(env={"WEBHOOK_KEYS": ""}).webhook_keys is None
+    for value, code in [
+        (f"{old},", "out_of_range"),  # a trailing comma: an empty second key
+        (f"{old},{new[:10]}", "out_of_range"),
+        ("k" * 257, "out_of_range"),
+        (f"{old},{new},{'x' * 32}", "too_many_items"),
+    ]:
+        with pytest.raises(ConfigValidationError) as info:
+            KeySetSettings.load(env={"WEBHOOK_KEYS": value})
+        assert codes(info.value) == {"WEBHOOK_KEYS": [code]}
+        assert old not in str(info.value) and new[:10] not in str(info.value) and "k" * 32 not in str(info.value)
+
+
 def test_a_json_value_is_measured_as_received() -> None:
     assert length_codes({"LIMITS": '{"max":12345678}'}) == {}
     assert length_codes({"LIMITS": '{"max":123456789}'}) == {"LIMITS": ["out_of_range"]}

@@ -131,9 +131,13 @@ jobs:
         working-directory: examples/orders
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt mypy
+          python -m pip install -r requirements.txt mypy pytest
           python -m mypy --strict app.py
           python -c "import app"
+      # The webhook key set: a rotation, and the key sets that fail at boot.
+      - name: Test
+        working-directory: examples/orders
+        run: python -m pytest -p no:cacheprovider test_app.py
       # contract.cue is generated; it must match what the CLI exports today,
       # except metadata.generator.version, which release PRs bump.
       - name: Contract is up to date

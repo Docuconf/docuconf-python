@@ -105,6 +105,18 @@ def _secret_inner(t: Any) -> Any:
     return None
 
 
+def _list_item(t: Any) -> Any:
+    """For a list type such as ``list[T]`` (or a tuple, set or sequence of ``T``), ``T`` unwrapped; otherwise None."""
+    origin = get_origin(t)
+    if origin in (list, tuple, set, frozenset) or (
+        origin is not None and _is_subclass(origin, typing.Sequence) and not _is_subclass(origin, str)
+    ):
+        args = [a for a in get_args(t) if a is not Ellipsis]
+        if len(args) == 1:
+            return _unwrap(args[0])[0]
+    return None
+
+
 def has_cryptography() -> bool:
     try:
         import cryptography  # noqa: F401
@@ -524,6 +536,8 @@ class _Builder:
 
         inner = _secret_inner(ann)
         secret = _is_subclass(ann, REDACTING_TYPES) or inner is not None or _has(meta, Secret)
+        # A list of SecretStr, such as a key set (SPEC §6.1): every item is a secret, so the list is one.
+        secret = secret or _is_subclass(_list_item(ann), SecretStr)
         if inner is not None:
             # pydantic.Secret[T]: the contract describes T.
             ann, more, _ = _unwrap(inner)
@@ -574,7 +588,7 @@ class _Builder:
                 problem("a secret must not have a default (SPEC §6)")
             else:
                 parts = (full_annotation, *fi.metadata)
-                target = Annotated[parts] if fi.metadata else full_annotation
+                target: Any = Annotated[parts] if fi.metadata else full_annotation
                 try:
                     TypeAdapter(target, config=self.ta_config).validate_python(py_default)
                 except PydanticValidationError as e:
@@ -700,7 +714,11 @@ class _Builder:
                 items = None
             elif _is_subclass(item, int) and not _is_subclass(item, enum.Enum):
                 items = "int"
-            elif _is_subclass(item, str) or _str_values(item) is not None or isinstance(item, typing.TypeVar):
+            elif (
+                _is_subclass(item, (str, SecretStr))
+                or _str_values(item) is not None
+                or isinstance(item, typing.TypeVar)
+            ):
                 # A TypeVar is docuconf.CsvList used without a parameter: pydantic reads str items.
                 items = "string"
             if items is not None:

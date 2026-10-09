@@ -1,8 +1,10 @@
-"""The orders service: GET /healthz and GET /config, configured by docuconf."""
+"""The orders service: GET /healthz, GET /config and POST /webhooks/payments, configured by docuconf."""
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 from datetime import timedelta
@@ -13,6 +15,9 @@ from pydantic import Field, SecretStr
 from pydantic_settings import NoDecode
 
 from docuconf import Csv, DocuconfSettings, Url
+
+# One webhook key: a secret of 32 to 256 characters.
+WebhookKey = Annotated[SecretStr, Field(min_length=32, max_length=256)]
 
 
 # DocuconfSettings is pydantic-settings' BaseSettings, whose constructor runs docuconf's checks:
@@ -46,13 +51,44 @@ class Settings(DocuconfSettings):
     The platform writes Go durations such as ``45s``; docuconf converts them to ISO 8601 for pydantic.
     """
     worker_count: int = Field(4, ge=1, le=64, description="Workers processing orders")
+    # A list of SecretStr is a secret list: each key prints as ********** (SPEC §6.1).
+    webhook_keys: Annotated[list[WebhookKey], NoDecode, Csv()] | None = Field(
+        None, min_length=1, max_length=2, description="Keys that verify the signature on incoming payment webhooks"
+    )
+    """A webhook is accepted when it is signed with any key in the list, so the key can be rotated without turning
+    webhooks away. To rotate:
+
+     1. add the new key as the second item, and roll out;
+     2. switch the sender to the new key;
+     3. remove the old key, and roll out.
+
+    Each key is 32 to 256 characters, so an empty or truncated key fails at boot. Without this variable, the service
+    rejects every webhook.
+    """
+
+
+def verify(keys: list[SecretStr] | None, body: bytes, signature: str) -> bool:
+    """Whether ``signature``, the hex HMAC-SHA256 of ``body``, was made with any of ``keys``.
+
+    Accepting every key in the set is what lets a key be rotated: during the overlap the old and the new key both work.
+    """
+    ok = False
+    for key in keys or []:
+        want = hmac.new(key.get_secret_value().encode(), body, hashlib.sha256).hexdigest()
+        # Check every key, so the time taken does not say which one matched.
+        ok = hmac.compare_digest(want.encode(), signature.lower().encode()) or ok
+    return ok
 
 
 def public_config(settings: Settings) -> dict[str, object]:
-    """The typed values, by env name, with the secret redacted."""
+    """The typed values, by env name, with the secrets redacted, set or not."""
     values = settings.model_dump(mode="json")
     values["database_url"] = "***"
+    values["webhook_keys"] = "***"
     return {name.upper(): value for name, value in values.items()}
+
+
+MAX_BODY = 1 << 20
 
 
 def handler(settings: Settings) -> type[BaseHTTPRequestHandler]:
@@ -66,6 +102,22 @@ def handler(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 self.reply(config, "application/json")
             else:
                 self.send_error(404)
+
+        def do_POST(self) -> None:
+            if self.path != "/webhooks/payments":
+                self.send_error(404)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY:
+                self.send_error(413)
+                return
+            body = self.rfile.read(length)
+            # Payment webhooks, signed with any key in WEBHOOK_KEYS (see Settings for how to rotate it).
+            if not verify(settings.webhook_keys, body, self.headers.get("X-Signature", "")):
+                self.send_error(401, "bad signature")
+                return
+            self.send_response(204)
+            self.end_headers()
 
         def reply(self, body: bytes, content_type: str) -> None:
             self.send_response(200)
