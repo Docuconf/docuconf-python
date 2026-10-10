@@ -21,6 +21,16 @@ if TYPE_CHECKING:  # cryptography is the optional ``tls`` extra
 log = logging.getLogger("docuconf")
 
 
+def call_hooks(name: str, hooks: list[Callable[..., None]], *args: Any) -> None:
+    """Call each hook; one that raises is logged by input name and error type only, and the rest still run."""
+    for hook in list(hooks):
+        try:
+            hook(*args)
+        except Exception as e:
+            # Never the message or traceback: either could carry the new value.
+            log.error("docuconf: an on-change hook for %s raised %s", name, type(e).__name__)
+
+
 class _FileValue:
     """Base for values that pydantic accepts as-is (an ``isinstance`` check)."""
 
@@ -41,19 +51,15 @@ class _FileValue:
         self._listeners: list[Callable[[Any], None]] = []
 
     def on_change(self, listener: Callable[[Any], None]) -> Callable[[], None]:
-        """Call ``listener(self)`` after each successful reload (``reload="watch"``).
+        """Call ``listener(self)`` after each accepted reload (``reload="watch"``), on the watcher thread.
 
-        Returns a function that removes the listener.
+        Never called for a rejected change. Returns a function that removes the listener.
         """
         self._listeners.append(listener)
         return lambda: self._listeners.remove(listener)
 
-    def _notify(self) -> None:
-        for listener in list(self._listeners):
-            try:
-                listener(self)
-            except Exception:
-                log.exception("docuconf: reload listener failed")
+    def _notify(self, name: str) -> None:
+        call_hooks(name, self._listeners, self)
 
 
 class TlsKeyPair(_FileValue):
@@ -129,7 +135,6 @@ class TlsKeyPair(_FileValue):
                     self._load_into(ctx)
                 except (OSError, ssl.SSLError):
                     log.exception("docuconf: could not reload an SSLContext")
-        self._notify()
 
     def __repr__(self) -> str:
         subject = self.certificate.subject.rfc4514_string()
@@ -155,7 +160,6 @@ class CaBundle(_FileValue):
     def _replace(self, new: CaBundle) -> None:
         with self._lock:
             self.pem, self.certificates = new.pem, new.certificates
-        self._notify()
 
     def __repr__(self) -> str:
         return f"CaBundle(path={str(self.path)!r}, certificates={len(self.certificates)})"
@@ -184,7 +188,6 @@ class Keystore(_FileValue):
             self.private_key = new.private_key
             self.certificate = new.certificate
             self.additional_certificates = new.additional_certificates
-        self._notify()
 
     def __repr__(self) -> str:
         subject = self.certificate.subject.rfc4514_string() if self.certificate else None

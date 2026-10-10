@@ -33,7 +33,7 @@ from .markers import (
 )
 from .overlays import with_overlays
 from .values import CaBundle, Keystore, TlsKeyPair
-from .watch import Watcher, get_watcher
+from .watch import RejectedChange, ReloadStatus, Watcher, get_watcher
 
 __all__ = [
     "ERROR_CODES",
@@ -66,6 +66,8 @@ __all__ = [
     "TlsKeyPair",
     "Url",
     "Violation",
+    "RejectedChange",
+    "ReloadStatus",
     "Watcher",
     "__version__",
     "contract_data",
