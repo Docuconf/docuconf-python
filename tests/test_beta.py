@@ -113,6 +113,28 @@ def test_key_set_logs_redacted(caplog: pytest.LogCaptureFixture) -> None:
 
 
 @pytest.mark.parametrize(
+    ("raw", "message"),
+    [(f"{OLD},", "key 2 is empty"), (f",{NEW}", "key 1 is empty"), (f"{OLD},,{NEW}", "key 2 is empty")],
+)
+def test_empty_key_message(raw: str, message: str) -> None:
+    """One wording in both modes: the key's 1-based position, never a key (SPEC §4.3)."""
+
+    class Wide(DocuconfSettings):
+        webhook_keys: Annotated[KeySet, Keys(max_keys=3)] = Field(description="Keys that verify webhook signatures")
+
+    contract = docuconf.contract_data(Wide, name="wide")
+    for load_it in (
+        lambda: load(Wide, WEBHOOK_KEYS=raw),
+        lambda: docuconf.load_contract(contract, {"WEBHOOK_KEYS": raw}),
+    ):
+        with pytest.raises(ConfigValidationError) as info:
+            load_it()
+        assert [(v.input, v.code, v.message) for v in info.value.violations] == [
+            ("WEBHOOK_KEYS", "out_of_range", message)
+        ]
+
+
+@pytest.mark.parametrize(
     ("env", "code"),
     [
         ({"WEBHOOK_KEYS": f"{OLD},"}, "out_of_range"),  # an empty key, from a stray separator

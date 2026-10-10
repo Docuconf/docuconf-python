@@ -519,6 +519,8 @@ def load_contract(
     *,
     termination_log: str | bool | None = None,
     now: datetime | None = None,
+    watch: bool | None = None,
+    watch_interval: float = 2.0,
 ) -> ContractSettings:
     """Validate ``env`` (default: the process environment) against ``contract`` and return the typed values.
 
@@ -536,6 +538,12 @@ def load_contract(
     ``env``) and checked as :func:`docuconf.load` checks them; ``now`` is the
     time certificates are checked at.
 
+    File inputs and overlays with ``reload: "watch"`` are polled every
+    ``watch_interval`` seconds and reloaded in place, as :func:`docuconf.load`
+    does (see :func:`docuconf.get_watcher`); ``watch`` defaults to on when
+    ``env`` is not given. A reload reuses the environment read here, so a
+    keystore password is not re-read.
+
     Raises :class:`ConfigValidationError` listing every violation, written to
     the termination log as :func:`docuconf.load` does.
     """
@@ -544,7 +552,7 @@ def load_contract(
     cls = contract_settings(data, profile=selected_profile(data, values))
     decl = declaration(cls)
     environment = Env(cls, decl, values)
-    _, file_kwargs, file_fields, violations = load_files(decl, environment, now)
+    results, file_kwargs, file_fields, violations = load_files(decl, environment, now)
     layers, more = _overlay_layers(data, cls, decl, environment.file_root)
     violations += more
     settings, more = build(cls, decl, environment, file_kwargs, file_fields, {}, layers=layers)
@@ -555,4 +563,17 @@ def load_contract(
         if termination_log is not False:
             write_termination_log(str(err), termination_log if isinstance(termination_log, str) else None)
         raise err
+    overlays = [spec for spec, _ in _overlay_specs(data)]
+    if (watch if watch is not None else env is None) and (
+        any(f.marker.reload == "watch" for f in decl.files) or any(o.reload == "watch" for o in overlays)
+    ):
+        from .watch import Watcher
+
+        def rebuild(kwargs: dict[str, Any], fields: set[str]) -> tuple[ContractSettings | None, list[Violation]]:
+            # The overlays as they are now, over the environment read at load.
+            layers, bad = _overlay_layers(data, cls, decl, environment.file_root)
+            new, more = build(cls, decl, environment, kwargs, fields, {}, layers=layers, warn=False)
+            return new, bad + more
+
+        Watcher.start(settings, decl, environment, results, interval=watch_interval, overlays=overlays, rebuild=rebuild)
     return settings

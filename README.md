@@ -392,9 +392,77 @@ top of `tls.crt` is, or is directly issued by, a certificate in `ca.crt`.
 symlink, so the watcher stats every file of the input through symlinks and re-reads all of them together when any
 has changed. A reload that fails its checks is logged and the old value is kept. `TlsKeyPair`, `CaBundle` and
 `Keystore` values are updated in place, and every `SSLContext` made by `TlsKeyPair.server_context()` or
-`client_context()` loads the new certificate. Other values are replaced on the settings object. Listen with
-`pair.on_change(callback)` or `docuconf.get_watcher(settings).on_reload(callback)`, and stop with
-`docuconf.get_watcher(settings).stop()`. The watcher also stops when the settings object is garbage-collected.
+`client_context()` loads the new certificate. Other values are replaced on the settings object. Stop the watcher
+with `docuconf.get_watcher(settings).stop()`; it also stops when the settings object is garbage-collected.
+
+A reload reuses the environment read at boot, so a keystore is always reopened with the password docuconf read then
+(environment variables do not change in a running process). A keystore re-issued under a new password is rejected as
+`keystore_unreadable` and the old one is kept: **rotating a keystore's password needs a rollout**, not just a new
+file.
+
+### Using a watched value
+
+docuconf swaps in the new value; code that copied the old one at startup (into an `SSLContext`, an HTTP client or a
+pool) keeps using it until its certificate expires. Either read the value from the settings object on every use, or
+rebuild what you made from it in an on-change hook:
+
+- `docuconf.get_watcher(settings).on_change(name, hook)` calls `hook(new_value)` after a new value of the input
+  `name` (its contract name, such as `"serving-tls"`) has passed its checks and replaced the old one. It is never
+  called for a rejected change. For an overlay, `new_value` is a dict of the fields that changed. It returns a
+  function that removes the hook. `value.on_change(hook)` on a `TlsKeyPair`, `CaBundle` or `Keystore`, and
+  `on_reload(hook)` (called as `hook(name, new_value)` for every input), work the same way.
+- Hooks run on the watcher thread, within `watch_interval` of the change, whether or not anything reads the value.
+  You can register several; one that raises is logged with the input name and the exception type only (never its
+  message, which could hold the value), and the others and the reload go on.
+
+A TLS server: the `SSLContext` from `server_context()` reloads its certificate in place, so build it once and new
+connections get the new certificate:
+
+```python
+import http.server
+
+settings = docuconf.load(Settings)
+server = http.server.ThreadingHTTPServer(("", 8443), Handler)
+server.socket = settings.tls.server_context().wrap_socket(server.socket, server_side=True)
+server.serve_forever()
+```
+
+An HTTP client that trusts a watched CA bundle: rebuild the client in the hook, and read the current one per request:
+
+```python
+import httpx
+
+settings = docuconf.load(Settings)
+client = httpx.Client(verify=settings.upstream_ca.client_context())
+
+
+def rebuild(ca: docuconf.CaBundle) -> None:
+    global client
+    client = httpx.Client(verify=ca.client_context())  # requests in flight finish on the old client
+
+
+docuconf.get_watcher(settings).on_change("upstream-ca", rebuild)
+
+
+def fetch(url: str) -> httpx.Response:
+    return client.get(url)  # the current client, read on every use
+```
+
+**Reload status**, for a health check or a metric: `watcher.status(name)` returns a `docuconf.ReloadStatus` for a
+watched input or overlay, and `watcher.statuses()` all of them by name:
+
+- `generation`: 1 after boot, plus one per accepted reload;
+- `last_reload`: when the last accepted reload happened (UTC), `None` before the first;
+- `last_rejected`: the last rejected change, a `docuconf.RejectedChange` with its `time`, `input` and violation
+  `codes`, never the content; `None` again once a later change is accepted.
+
+```python
+watcher = docuconf.get_watcher(settings)
+for name, status in watcher.statuses().items():
+    reload_generation.labels(input=name).set(status.generation)
+    if status.last_rejected is not None:
+        log.warning("%s: rejected change %s", name, ", ".join(status.last_rejected.codes))
+```
 
 ## How the declaration maps to the contract
 
@@ -622,9 +690,10 @@ class Settings(DocuconfSettings):
   A value set both in the environment and in an overlay logs a warning; the environment wins.
 - **`reload="watch"`**: the watcher polls the file (Kubernetes swaps a symlink when a ConfigMap changes). When it
   changes, docuconf re-validates the whole class through pydantic-settings and replaces the changed fields on the
-  settings object; a reload that fails its checks is logged and the previous values are kept. `on_reload` listeners
-  receive the overlay's name and a dict of the changed fields. Code that copied a value out of the settings object
-  keeps the old one, so read it from the settings object when you need it.
+  settings object; a reload that fails its checks is logged and the previous values are kept. `on_change("platform", hook)`
+  hooks receive a dict of the changed fields (`on_reload` listeners also get the overlay's name), and the overlay has
+  a reload status like a file input. Code that copied a value out of the settings object keeps the old one, so read
+  it from the settings object when you need it ([Using a watched value](#using-a-watched-value)).
 - **Declaration checks**: `load` raises `DeclarationError` when the class declares overlays but its sources do not go
   through `with_overlays`, when an environment source comes after a config file source, or when the overlay's
   directory would hide files the app ships with: the working directory, a baked-in config file's directory, or the
@@ -673,6 +742,11 @@ and `values.value("serving-tls")` takes the input's own name. Profiles and overl
 each variable's default, then the selected profile's (`profiles.selector` from the environment, else
 `profiles.default`), then the config-file `overlays` (each value read at its `configKey`, split on `keySeparator`, and
 checked like an env value), then the environment.
+
+File inputs and overlays with `reload: "watch"` are reloaded in place as in a declaration, by the same watcher:
+`docuconf.get_watcher(values)` gives the hooks and the status above, and `values.value(name)` returns the current
+value. As with `docuconf.load`, the watcher runs when `env=` is not given; pass `watch=True` (and `watch_interval=`)
+to watch with an explicit environment, or `watch=False` to turn it off.
 
 ## Conformance
 
