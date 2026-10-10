@@ -4,6 +4,35 @@ All notable changes to docuconf-pydantic are documented here. Entries after 0.1.
 [release-please](https://github.com/googleapis/release-please) from Conventional Commit messages; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.2.0](https://github.com/Docuconf/docuconf-python/compare/v0.1.0...v0.2.0) (2026-10-10)
+
+
+### Features
+
+* beta suite (keySet, deprecated rules, strict parsing, files, profiles, overlays) ([8788004](https://github.com/Docuconf/docuconf-python/commit/8788004689139c99db353c9998010136c21b00cf))
+* beta suite (keySet, deprecated rules, strict parsing, files, profiles, overlays) ([a3a77fd](https://github.com/Docuconf/docuconf-python/commit/a3a77fd1134ac46c7004e0bd172916812b7b5601))
+* **examples:** dual-key webhook key set with rotation ([43a4dff](https://github.com/Docuconf/docuconf-python/commit/43a4dffff1071312f6aa355be5ff0f7bb70ed84d))
+* **examples:** dual-key webhook key set with rotation ([ac70453](https://github.com/Docuconf/docuconf-python/commit/ac7045393ffc0ab0af00d72020cbe0ed0e97d690))
+* export description and details from doc comments ([d0e02e6](https://github.com/Docuconf/docuconf-python/commit/d0e02e640a9257c81283ddbb19af0bd3aba9aaec))
+* export description and details from doc comments ([bf48f4b](https://github.com/Docuconf/docuconf-python/commit/bf48f4be666347179f1b74a09cf7b55a014f024e))
+* maxLength on url/json and item length limits on string lists ([4447ad0](https://github.com/Docuconf/docuconf-python/commit/4447ad010625a67ce39a7d9aa49b428cbd7004b3))
+* maxLength on url/json and item length limits on string lists ([894d5eb](https://github.com/Docuconf/docuconf-python/commit/894d5ebd1c631115c054dfd40a5069cb2a63a072))
+* reload hooks and status; one empty-key message ([c9a067d](https://github.com/Docuconf/docuconf-python/commit/c9a067d33c23ae79045558632f4bbf107e670c0f))
+* reload hooks and status; one empty-key message ([767fab9](https://github.com/Docuconf/docuconf-python/commit/767fab95f6e4df86c39d604a8e342c50d7741733))
+
+
+### Bug Fixes
+
+* type the default-check target as Any for mypy 2.4 ([78860b1](https://github.com/Docuconf/docuconf-python/commit/78860b1f390a1f9133c317d1f46d19c259c33787))
+* type the default-check target as Any for mypy 2.4 ([00a271b](https://github.com/Docuconf/docuconf-python/commit/00a271b1ba0c99d9db7877f8a0fe65602209297d))
+* type the default-check target as Any for mypy 2.4 ([20fbeac](https://github.com/Docuconf/docuconf-python/commit/20fbeacd5764f48f89da89e090390958d0894e37))
+
+
+### Documentation
+
+* **examples:** length limits and generated CONFIG docs ([5a09ee1](https://github.com/Docuconf/docuconf-python/commit/5a09ee1d619e28d1870699cf3e696d094b8e228b))
+* link docuconf.dev ([93794bf](https://github.com/Docuconf/docuconf-python/commit/93794bfa1f202fbe354e5563197ba4ae2f7f64c6))
+
 ## 0.1.0
 
 First version: typed configuration contracts for
