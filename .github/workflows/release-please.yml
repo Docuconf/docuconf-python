@@ -29,12 +29,12 @@ jobs:
       - name: GitHub App token
         id: app
         if: env.USE_APP == 'true'
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: release
         with:
           token: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
