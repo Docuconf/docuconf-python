@@ -8,21 +8,25 @@ hand-written declaration would, then loads it through the same code as
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import keyword
 import os
 import posixpath
-from collections.abc import Mapping
-from datetime import datetime, timedelta
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Optional
 
-from pydantic import Field, create_model
+from pydantic import Field, TypeAdapter, ValidationError, create_model
 from pydantic_settings import BaseSettings, NoDecode, PydanticBaseSettingsSource, SettingsConfigDict
 
 from . import durations
 from .declaration import FORMAT_BY_SUFFIX, Declaration, OverlaySpec, declaration
 from .errors import ConfigValidationError, DeclarationError, Violation, write_termination_log
+from .files import FileResult, load_file
 from .keyset import Keys, KeySet
 from .loader import ActiveEnvSource, Env, Layer, _RedactSecrets, build, load_files, wire_value
 from .markers import (
@@ -50,6 +54,32 @@ from .values import CaBundle, Keystore, TlsKeyPair
 API_VERSION = "docuconf.dev/v1alpha1"
 _VAR_TYPES = ("string", "int", "float", "bool", "duration", "url", "enum", "list", "keySet", "json")
 _FILE_TYPES = ("config", "tls", "caBundle", "keystore", "text", "binary")
+#: The variable that names the workload's role (SPEC §4.9).
+ROLE_VAR = "DOCUCONF_ROLE"
+_ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+_ROLE_NAME = re.compile(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?")
+_FRAGMENT_NAME = re.compile(r"[a-z][a-z0-9-]*@[1-9][0-9]*")
+#: The types a requiredIf condition variable can have: they compare as written (SPEC §4.2.1).
+_CONDITION_TYPES = ("string", "int", "bool", "enum")
+
+
+@dataclass(frozen=True)
+class RequiredIf:
+    """A condition that makes an input required (SPEC §4.2.1): while the variable ``var`` has ``value``.
+
+    ``value`` is a ``str``, an ``int`` or a ``bool``, never a ``bool`` standing in for an ``int``.
+    """
+
+    var: str
+    value: str | int | bool
+
+    def holds_for(self, value: Any) -> bool:
+        """Whether a variable's loaded value is the condition's value (``True`` is not ``1``)."""
+        return type(value) is type(self.value) and value == self.value
+
+    def __str__(self) -> str:
+        """The condition as messages write it, the value as JSON: ``LOG_FORMAT is "json"``."""
+        return f"{self.var} is {json.dumps(self.value, ensure_ascii=False)}"
 
 
 class ContractSettings(_RedactSecrets, BaseSettings):
@@ -65,6 +95,16 @@ class ContractSettings(_RedactSecrets, BaseSettings):
     __docuconf_managed__: ClassVar[bool] = True
     #: Input name (a variable or file input) to field name.
     docuconf_inputs: ClassVar[dict[str, str]] = {}
+    #: The well-known fragments the contract includes (SPEC §4.8), ``name@major``. Their variables are in ``vars``.
+    docuconf_includes: ClassVar[tuple[str, ...]] = ()
+    #: The contract's roles (SPEC §4.9); empty when it has none.
+    docuconf_roles: ClassVar[tuple[str, ...]] = ()
+    #: The role the class was built for: its inputs of other roles are optional. None with no (valid) role.
+    docuconf_role: ClassVar[str | None] = None
+    #: Each input with a ``requiredIf`` (SPEC §4.2.1), by input name.
+    docuconf_required_if: ClassVar[dict[str, RequiredIf]] = {}
+    #: Each input with ``roles``, by input name: the roles that use it.
+    docuconf_input_roles: ClassVar[dict[str, tuple[str, ...]]] = {}
 
     def value(self, name: str) -> Any:
         """The typed value of the input ``name``: a variable (``PORT``) or a file input (``serving-tls``)."""
@@ -264,6 +304,133 @@ def _deprecated(entry: Mapping[str, Any]) -> tuple[str | None, Any]:
     return dep.get("replacedBy"), dep.get("message", "")
 
 
+def _read_roles(node: Any, what: str, problems: list[str]) -> tuple[str, ...] | None:
+    """A list of roles (SPEC §4.9): DNS labels, at least one, none listed twice. None when absent."""
+    if node is None:
+        return None
+    if not isinstance(node, list) or not node or not all(isinstance(r, str) for r in node):
+        problems.append(f"{what}roles must be a list of at least one role name")
+        return None
+    for i, r in enumerate(node):
+        if not _ROLE_NAME.fullmatch(r):
+            problems.append(f"{what}role {r!r} must be a DNS label")
+        elif r in node[:i]:
+            problems.append(f"{what}role {r} is listed twice")
+    return tuple(node)
+
+
+def _read_includes(node: Any, problems: list[str]) -> tuple[str, ...]:
+    """The well-known fragments the contract includes (SPEC §4.8), ``name@major``: their variables are inline."""
+    if node is None:
+        return ()
+    if not isinstance(node, list) or not all(isinstance(x, str) for x in node):
+        problems.append("includes must be a list of fragment names, such as otel@1")
+        return ()
+    out: list[str] = []
+    for name in node:
+        if not _FRAGMENT_NAME.fullmatch(name):
+            problems.append(f"includes: {name!r} is not a fragment name, name@major")
+        elif name in out:
+            problems.append(f"includes: {name} is listed twice")
+        else:
+            out.append(name)
+    return tuple(out)
+
+
+def _read_required_if(entry: Mapping[str, Any], what: str, problems: list[str]) -> RequiredIf | None:
+    """``requiredIf: {VAR: value}`` (SPEC §4.2.1): one variable and a string, integer or boolean value."""
+    node = entry.get("requiredIf")
+    if node is None:
+        return None
+    if not isinstance(node, Mapping) or len(node) != 1:
+        problems.append(f"{what}requiredIf must name one variable and its value: {{VAR: value}}")
+        return None
+    ((var, value),) = node.items()
+    # bool is an int in Python; both are accepted here, and kept apart when compared with the variable's type.
+    if not isinstance(var, str) or not _ENV_NAME.fullmatch(var) or not isinstance(value, (str, int)):
+        problems.append(f"{what}requiredIf must name one variable and a string, integer or boolean value")
+        return None
+    if entry.get("required") or entry.get("default") is not None:
+        problems.append(f"{what}an input with requiredIf cannot be required or have a default")
+    if entry.get("deprecated") is not None:
+        problems.append(
+            f"{what}a conditionally required input cannot be deprecated: the platform could not stop setting it"
+        )
+    return RequiredIf(var, value)
+
+
+def _check_condition(
+    what: str,
+    name: str,
+    cond: RequiredIf,
+    vars_: Mapping[str, Any],
+    fields: Mapping[str, Any],
+    problems: list[str],
+) -> None:
+    """A requiredIf names another declared, plain string, int, bool or enum variable, with a value it can hold."""
+    on = vars_.get(cond.var)
+    if cond.var == name or not isinstance(on, Mapping):
+        problems.append(f"{what}requiredIf must name another declared variable, not {cond.var!r}")
+        return
+    vtype = on.get("type")
+    if on.get("secret") or vtype not in _CONDITION_TYPES:
+        problems.append(f"{what}requiredIf names {cond.var}, which is not a plain string, int, bool or enum variable")
+        return
+    want: type = {"int": int, "bool": bool}.get(vtype, str)
+    detail = ""
+    ok = type(cond.value) is want
+    if ok and cond.var in fields:
+        try:
+            TypeAdapter(fields[cond.var][0]).validate_python(cond.value, strict=True)
+        except ValidationError as e:
+            ok, detail = False, ": " + e.errors()[0]["msg"]
+    if not ok:
+        problems.append(f"{what}requiredIf: {cond} is not a value {cond.var} can have{detail}")
+
+
+def _check_roles(
+    roles: tuple[str, ...] | None,
+    input_roles: Mapping[str, tuple[str, ...]],
+    labels: Mapping[str, str],
+    vars_: Mapping[str, Any],
+    problems: list[str],
+) -> None:
+    """The inputs' roles against the contract's (SPEC §4.9), and DOCUCONF_ROLE: a required enum of exactly the roles."""
+    for name, used in input_roles.items():
+        what = labels[name]
+        if roles is None:
+            problems.append(f"{what}has roles, but the contract declares none")
+            continue
+        for r in used:
+            if r not in roles:
+                problems.append(f"{what}role {r} is not one of the contract's roles, {', '.join(roles)}")
+    if roles is None:
+        return
+    role_var = vars_.get(ROLE_VAR)
+    if not (
+        isinstance(role_var, Mapping)
+        and role_var.get("type") == "enum"
+        and role_var.get("required") is True
+        and role_var.get("roles") is None
+        and list(role_var.get("values") or []) == list(roles)
+    ):
+        problems.append(
+            f"{ROLE_VAR}: a contract with roles declares it as a required enum whose values are the roles, "
+            f"{', '.join(roles)}, used by every role"
+        )
+
+
+def selected_role(contract: Mapping[str, Any], env: Mapping[str, str]) -> str | None:
+    """The workload's role (SPEC §4.9): ``DOCUCONF_ROLE`` from ``env`` when it is one of the contract's roles.
+
+    None when the contract has no roles, or the variable is unset or names
+    another role; the load then reports that as the one problem about roles.
+    """
+    roles = contract.get("roles")
+    role = env.get(ROLE_VAR)
+    return role if isinstance(roles, list) and role in roles else None
+
+
 def field_name(input_name: str) -> str:
     """The settings field of a file input: its name with ``_`` for ``-`` (``serving-tls`` is ``serving_tls``)."""
     name = input_name.replace("-", "_")
@@ -374,17 +541,23 @@ def selected_profile(contract: Mapping[str, Any], env: Mapping[str, str]) -> str
 
 
 def contract_settings(
-    contract: Mapping[str, Any] | str | os.PathLike[str], *, profile: str | None = None
+    contract: Mapping[str, Any] | str | os.PathLike[str], *, profile: str | None = None, role: str | None = None
 ) -> type[ContractSettings]:
     """Build the settings class for ``contract`` (a mapping, JSON text or the path of a ``contract.json``).
 
     ``profile`` selects a profile (SPEC §4.4): its ``profiles.defaults``
-    become the variables' defaults. :func:`load_contract` picks it from the
-    environment.
+    become the variables' defaults. ``role`` is the workload's role (SPEC
+    §4.9): an input whose ``roles`` do not include it is optional, and with no
+    role every input that has ``roles`` is. :func:`load_contract` picks both
+    from the environment. The class records each input's ``requiredIf``
+    (SPEC §4.2.1), which :func:`load_contract` checks once the variables are
+    loaded, and the contract's ``includes`` (SPEC §4.8) and ``roles``.
 
     Raises :class:`DeclarationError` when the contract is not one docuconf can
     load: an unknown type or encoding, a non-RE2 pattern, a default that breaks
-    its own constraints, or a deprecated required input.
+    its own constraints, a deprecated required input, a ``requiredIf`` that
+    does not name another plain variable and a value it can hold, or ``roles``
+    that do not match the contract's and ``DOCUCONF_ROLE``.
     """
     data = _read(contract)
     problems: list[str] = []
@@ -412,18 +585,48 @@ def contract_settings(
             for var_name in profile_defaults:
                 if var_name not in vars_:
                     problems.append(f"profiles.defaults.{profile}: {var_name} is not a declared variable")
+    includes = _read_includes(data.get("includes"), problems)
+    roles = _read_roles(data.get("roles"), "", problems)
+    if role is not None and (roles is None or role not in roles):
+        role = None
+    entries: dict[str, tuple[str, Mapping[str, Any]]] = {}  # input name: (message prefix, contract entry)
+    for name in sorted(vars_):
+        if isinstance(vars_[name], Mapping):
+            entries[name] = (f"{name}: ", vars_[name])
+    for name in sorted(files):
+        if isinstance(files[name], Mapping):
+            entries.setdefault(name, (f"file {name}: ", files[name]))
+    required_if: dict[str, RequiredIf] = {}
+    input_roles: dict[str, tuple[str, ...]] = {}
+    for name, (what, entry) in entries.items():
+        cond = _read_required_if(entry, what, problems)
+        if cond is not None:
+            required_if[name] = cond
+        used = _read_roles(entry.get("roles"), what, problems)
+        if used is not None:
+            input_roles[name] = used
+    _check_roles(roles, input_roles, {n: w for n, (w, _) in entries.items()}, vars_, problems)
+
+    def for_role(name: str, entry: Mapping[str, Any]) -> Mapping[str, Any]:
+        # An input only other roles use is optional in this one (SPEC §4.9).
+        if name in input_roles and role not in input_roles[name] and entry.get("required"):
+            return {**entry, "required": False}
+        return entry
+
     fields: dict[str, Any] = {}
     inputs: dict[str, str] = {}
     for name in sorted(vars_):
-        f = _field(name, vars_[name], problems, profile_defaults.get(name, _UNSET))
+        f = _field(name, for_role(name, vars_[name]), problems, profile_defaults.get(name, _UNSET))
         if f is not None:
             fields[name] = f
             inputs[name] = name
     for name in sorted(files):
-        f = _file_field(name, files[name], problems)
+        f = _file_field(name, for_role(name, files[name]), problems)
         if f is not None:
             fields[field_name(name)] = f
             inputs[name] = field_name(name)
+    for name, cond in required_if.items():
+        _check_condition(entries[name][0], name, cond, vars_, fields, problems)
     if problems:
         raise DeclarationError(problems)
     service = (data.get("metadata") or {}).get("name") or "contract"
@@ -435,6 +638,11 @@ def contract_settings(
         raise DeclarationError([f"cannot load the contract: {str(e).strip().splitlines()[-1]}"]) from e
     cls.docuconf_service = service  # type: ignore[attr-defined]
     cls.docuconf_inputs = inputs
+    cls.docuconf_includes = includes
+    cls.docuconf_roles = roles or ()
+    cls.docuconf_role = role
+    cls.docuconf_required_if = required_if
+    cls.docuconf_input_roles = input_roles
     return cls
 
 
@@ -513,6 +721,102 @@ def _overlay_layers(
     return layers, violations
 
 
+def _loaded(
+    name: str, var: Mapping[str, Any], env: Env, layers: Mapping[str, Layer], defaults: Mapping[str, Any]
+) -> Any:
+    """The loaded value of a plain (string, int, bool or enum) variable with no violation, or ``_UNSET``.
+
+    The layers in SPEC §4.7's order, top first: the environment (empty is
+    unset but for a string), an overlay, the selected profile, the default.
+    """
+    raw = env(name)
+    if raw is None or (raw == "" and var.get("type") != "string"):
+        layer = layers.get(name)
+        raw = layer.raw if layer is not None and not layer.bad else None
+    if raw is not None:
+        if var.get("type") == "bool":
+            return raw.lower() == "true"
+        return int(raw) if var.get("type") == "int" else raw
+    if name in defaults:
+        return defaults[name]
+    default = var.get("default")
+    return _UNSET if default is None else default
+
+
+def _is_set(
+    name: str, var: Mapping[str, Any], env: Env, layers: Mapping[str, Layer], defaults: Mapping[str, Any]
+) -> bool:
+    """Whether the variable ``name`` (an input with no default) has a value from any layer."""
+    if name in layers or defaults.get(name) is not None:
+        return True
+    if var.get("type") in ("list", "keySet") and var.get("encoding") == "indexed":
+        items, gap = env.indexed((name,))
+        return items is not None or gap is not None
+    raw = env(name)
+    return raw is not None and (raw != "" or var.get("type") == "string")
+
+
+def _conditions(
+    data: Mapping[str, Any],
+    cls: type[ContractSettings],
+    env: Env,
+    layers: Mapping[str, Layer],
+    defaults: Mapping[str, Any],
+    results: list[FileResult],
+    violations: Sequence[Violation],
+    now: datetime,
+) -> list[Violation]:
+    """Conditional requirements (SPEC §4.2.1), on the condition variables' loaded values.
+
+    An input whose condition holds, and that its role uses (SPEC §4.9), is
+    required: a missing variable is ``missing_required``, a missing file
+    ``file_missing``, each saying which condition requires it. A condition
+    variable with a violation of its own has no value, so it makes nothing
+    required. A file input made required replaces its result in ``results``,
+    so a reload checks it as required too.
+    """
+    if not cls.docuconf_required_if:
+        return []
+    vars_ = data.get("vars") or {}
+    reported = {v.input for v in violations}
+    role = cls.docuconf_role
+
+    def when(name: str) -> RequiredIf | None:
+        cond = cls.docuconf_required_if.get(name)
+        used = cls.docuconf_input_roles.get(name)
+        if cond is None or (used is not None and role not in used) or cond.var in reported:
+            return None
+        value = _loaded(cond.var, vars_[cond.var], env, layers, defaults)
+        return cond if cond.holds_for(value) else None
+
+    out: list[Violation] = []
+    for name in sorted(vars_):
+        if (
+            name in cls.docuconf_required_if
+            and name not in reported
+            and not _is_set(name, vars_[name], env, layers, defaults)
+        ):
+            cond = when(name)
+            if cond is not None:
+                out.append(Violation(name, "var", "missing_required", f"is required when {cond}"))
+    for i, r in enumerate(results):
+        if r.present or r.violations or r.spec.required:
+            continue
+        cond = when(r.spec.name)
+        if cond is None:
+            continue
+        again = load_file(dataclasses.replace(r.spec, required=True), env, now=now, root=env.file_root)
+        again.violations = [
+            dataclasses.replace(v, message=f"{v.message}, and is required when {cond}")
+            if v.code == "file_missing"
+            else v
+            for v in again.violations
+        ]
+        results[i] = again
+        out.extend(again.violations)
+    return out
+
+
 def load_contract(
     contract: Mapping[str, Any] | str | os.PathLike[str],
     env: Mapping[str, str] | None = None,
@@ -549,14 +853,19 @@ def load_contract(
     """
     data = _read(contract)
     values = dict(os.environ if env is None else env)
-    cls = contract_settings(data, profile=selected_profile(data, values))
+    profile = selected_profile(data, values)
+    cls = contract_settings(data, profile=profile, role=selected_role(data, values))
     decl = declaration(cls)
     environment = Env(cls, decl, values)
+    now = now or datetime.now(timezone.utc)
     results, file_kwargs, file_fields, violations = load_files(decl, environment, now)
     layers, more = _overlay_layers(data, cls, decl, environment.file_root)
     violations += more
     settings, more = build(cls, decl, environment, file_kwargs, file_fields, {}, layers=layers)
     violations += more
+    profiles = data.get("profiles")
+    defaults = (profiles.get("defaults") or {}).get(profile) or {} if isinstance(profiles, Mapping) else {}
+    violations += _conditions(data, cls, environment, layers, defaults, results, violations, now)
     if violations or settings is None:
         violations.sort(key=lambda v: v.input)
         err = ConfigValidationError(violations)
