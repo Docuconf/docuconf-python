@@ -743,6 +743,25 @@ each variable's default, then the selected profile's (`profiles.selector` from t
 `profiles.default`), then the config-file `overlays` (each value read at its `configKey`, split on `keySeparator`, and
 checked like an env value), then the environment.
 
+It also reads three later parts of the spec:
+
+- **Conditional requirements** (`requiredIf`, SPEC §4.2.1) on variables and file inputs: once the variables are
+  loaded, an input whose condition variable's loaded value (from the environment, an overlay, the selected profile or
+  its default) equals the condition's value is required. A missing variable is `missing_required` and a missing file
+  `file_missing`, each naming the condition, the value as JSON: `LOG_SCHEMA_URL [missing_required]: is required when
+  LOG_FORMAT is "json"`. A condition variable with a violation of its own makes nothing required.
+- **Roles** (`roles`, SPEC §4.9): the role is `DOCUCONF_ROLE` from the environment when it is one of the contract's
+  roles. An input whose `roles` do not include it is optional, and so is every input with `roles` when there is no
+  valid role, so `DOCUCONF_ROLE` itself (`missing_required` or `not_in_enum`) is the one problem reported.
+- **Well-known fragments** (`includes`, SPEC §4.8): the fragments' variables are inline in `vars` and load like any
+  other; the class lists the fragment names in `docuconf_includes`.
+
+`contract_settings` raises `DeclarationError` for a contract that breaks these rules as the meta-schema states them:
+a `requiredIf` must name one other declared, non-secret `string`, `int`, `bool` or `enum` variable and a value that
+variable can hold, on an input that is not required, has no default and is not deprecated; roles are DNS labels, each
+listed once; an input's roles must be among the contract's; and a contract with roles declares `DOCUCONF_ROLE` as a
+required `enum` whose values are the roles, with no roles of its own.
+
 File inputs and overlays with `reload: "watch"` are reloaded in place as in a declaration, by the same watcher:
 `docuconf.get_watcher(values)` gives the hooks and the status above, and `values.value(name)` returns the current
 value. As with `docuconf.load`, the watcher runs when `env=` is not given; pass `watch=True` (and `watch_interval=`)
@@ -760,11 +779,16 @@ DOCUCONF_CONFORMANCE=../docuconf-go/conformance/cases.json DOCUCONF_REQUIRE_CONF
 Without `DOCUCONF_CONFORMANCE` it looks for `../docuconf-go/conformance/cases.json` and skips when the file is
 missing, unless `DOCUCONF_REQUIRE_CONFORMANCE=1` (as in CI) makes that a failure.
 
+It also runs `cases.pending.json`, next to `cases.json`: the cases of features not every SDK has yet. A pending case
+whose tags this SDK supports must pass; one with another tag is skipped without failing, and without the file the
+pending run is skipped.
+
 **Capability tags.** The runner keeps an allow-list of the tags this SDK supports, and skips a case only when it
 requires a tag outside it, including one the runner does not know (SPEC §12). It supports every tag: `int64`
 (Python's `int` holds every 64-bit value), `json-schema`, `key-set`, `deprecated`, `strict-parsing`, `files`,
-`profiles` and `overlays`, so **no case is skipped**. `json-schema` needs the `jsonschema` extra, and `files` the
-`jsonschema`, `tls` and `yaml` extras, which CI installs; with `DOCUCONF_REQUIRE_CONFORMANCE=1`, a skipped case fails the suite.
+`profiles`, `overlays`, `required-if` and `roles`, so **no case is skipped**. `json-schema` needs the `jsonschema`
+extra, and `files` the `jsonschema`, `tls` and `yaml` extras, which CI installs; with `DOCUCONF_REQUIRE_CONFORMANCE=1`,
+a skipped case of `cases.json` fails the suite.
 
 **Export.** `tests/fixtures/conformance_fixture.py` declares docuconf-go's shared export fixture
 (`conformance/export/fixture.yaml`), and `tests/test_export.py` exports it and compares it with
@@ -778,6 +802,8 @@ checkout.
 - Profiles (SPEC §4.4) in a declaration: pydantic-settings has no profile files, so values in baked-in config files
   are not exported as defaults; give fields defaults in Python if the platform need not set them. The contract-first
   mode loads a contract's `profiles`.
+- `requiredIf`, `roles` and `includes` (SPEC §4.2.1, §4.9, §4.8) in a declaration: only the contract-first mode
+  reads them.
 - Markdown documentation generation.
 - `AliasPath` aliases. A nested model without `env_nested_delimiter` is exported as one `json` variable.
 

@@ -9,6 +9,12 @@ The runner keeps an allow-list of the capability tags this SDK supports
 (conformance/README.md). A case is skipped only when it requires a tag that
 is not on it, which includes a tag the runner does not know, so a new tag
 never runs against an SDK written before it.
+
+``cases.pending.json``, next to ``cases.json``, holds the cases of features
+not every SDK has yet. Its cases run too: one whose tags are all supported
+must pass, and one with a tag outside the allow-list is skipped without
+failing, even with ``DOCUCONF_REQUIRE_CONFORMANCE=1``. Without the file, the
+pending run is skipped.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ from docuconf.durations import to_go
 
 HERE = Path(__file__).parent
 CASES = Path(os.environ.get("DOCUCONF_CONFORMANCE") or HERE.parent.parent / "docuconf-go/conformance/cases.json")
+PENDING = CASES.parent / "cases.pending.json"
 REQUIRED = os.environ.get("DOCUCONF_REQUIRE_CONFORMANCE") == "1"
 
 _HAS_JSONSCHEMA = importlib.util.find_spec("jsonschema") is not None
@@ -38,23 +45,24 @@ _HAS_YAML = importlib.util.find_spec("yaml") is not None
 #: The capability tags (conformance/README.md) this SDK supports: an allow-list, never a deny-list.
 #: json-schema needs the jsonschema extra; files needs it too (config files are checked against their
 #: schema), the tls extra (certificates and PKCS#12 keystores) and the yaml extra. CI installs all three.
-SUPPORTED = {"int64", "key-set", "deprecated", "strict-parsing", "profiles", "overlays"}
+SUPPORTED = {"int64", "key-set", "deprecated", "strict-parsing", "profiles", "overlays", "required-if", "roles"}
 if _HAS_JSONSCHEMA:
     SUPPORTED.add("json-schema")
 if _HAS_JSONSCHEMA and _HAS_CRYPTOGRAPHY and _HAS_YAML:
     SUPPORTED.add("files")
 
 
-def _cases() -> list[dict[str, Any]]:
-    if not CASES.is_file():
+def _cases(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
         return []
-    data = json.loads(CASES.read_text(encoding="utf-8"))
-    assert data.get("version") == 1, f"{CASES}: unsupported cases.json version {data.get('version')!r}"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data.get("version") == 1, f"{path}: unsupported {path.name} version {data.get('version')!r}"
     cases: list[dict[str, Any]] = data["cases"]
     return cases
 
 
-ALL = _cases()
+ALL = _cases(CASES)
+ALL_PENDING = _cases(PENDING)
 
 
 def _unsupported(case: dict[str, Any]) -> list[str]:
@@ -125,6 +133,25 @@ def test_case(case: dict[str, Any], tmp_path: Path) -> None:
     missing = _unsupported(case)
     if missing:
         pytest.skip(f"requires {', '.join(missing)}")
+    _run(case, tmp_path)
+
+
+def test_pending_cases_file() -> None:
+    if not PENDING.is_file():
+        pytest.skip(f"{PENDING} not found: no pending cases to run")
+    assert ALL_PENDING, f"{PENDING} holds no cases"
+
+
+@pytest.mark.parametrize("case", ALL_PENDING, ids=[f"pending/{c['id']}" for c in ALL_PENDING])
+def test_pending_case(case: dict[str, Any], tmp_path: Path) -> None:
+    """A pending case with only supported tags must pass; one with another tag is skipped, never a failure."""
+    missing = _unsupported(case)
+    if missing:
+        pytest.skip(f"pending, requires {', '.join(missing)}")
+    _run(case, tmp_path)
+
+
+def _run(case: dict[str, Any], tmp_path: Path) -> None:
     log = tmp_path / "termination-log"
     # A new, empty file root for every case, files or not, so no case reads the machine's own files.
     root = tmp_path / "root"
