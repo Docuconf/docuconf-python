@@ -17,8 +17,11 @@ Descriptions come from `Field(description=...)`, constraints from `ge`/`le`/`min
 enums from `Literal` or `Enum`, secrets from `SecretStr`. docuconf adds only what pydantic cannot express: URL
 schemes, CSV lists, file inputs and a secret marker for other types.
 
-**Example service:** [`examples/orders/`](examples/orders/), a small `http.server` app with its exported contract
-and a smoke test.
+**Examples:**
+
+- [`examples/orders/`](examples/orders/): a small `http.server` app with its exported contract and a smoke test.
+- [`examples/shop/`](examples/shop/): one image with a `web` and a `worker` role, `requiredIf` conditions and the
+  `otel@1` fragment, loaded from a hand-written contract in the [contract-first mode](#contract-first-mode).
 
 ## 1. Install
 

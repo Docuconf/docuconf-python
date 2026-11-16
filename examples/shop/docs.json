@@ -1,0 +1,886 @@
+{
+  "apiVersion": "docs.docuconf.dev/v1alpha1",
+  "kind": "ConfigDocs",
+  "service": {
+    "name": "shop",
+    "generator": {
+      "language": "manual",
+      "sdk": "hand-written",
+      "version": "1.0.0"
+    },
+    "includes": [
+      "otel@1"
+    ],
+    "roles": [
+      "web",
+      "worker"
+    ]
+  },
+  "groups": [
+    {
+      "name": "",
+      "title": "General",
+      "inputs": [
+        {
+          "name": "ALLOWED_ORIGINS",
+          "kind": "var",
+          "type": "list",
+          "typeLabel": "list of strings",
+          "required": true,
+          "roles": [
+            "web"
+          ],
+          "secret": false,
+          "description": "Origins the web server accepts browser requests from",
+          "wire": {
+            "encoding": "csv",
+            "separator": ",",
+            "text": "the items joined by `,` with nothing around it, such as `a,b`",
+            "platform": "a list of strings, such as `[a, b]`; docuconf writes it in the wire format"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "missing_required",
+            "invalid_type"
+          ]
+        },
+        {
+          "name": "DATABASE_URL",
+          "kind": "var",
+          "type": "url",
+          "typeLabel": "URL",
+          "required": true,
+          "secret": true,
+          "description": "Postgres connection string",
+          "wire": {
+            "text": "an absolute URL, `scheme://...`, as is",
+            "platform": "a `secretKeyRef` or `injected` reference, never the value"
+          },
+          "constraints": [
+            {
+              "rule": "schemes",
+              "params": {
+                "schemes": [
+                  "postgres",
+                  "postgresql"
+                ]
+              },
+              "text": "`postgres` or `postgresql` URL"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "secretKeyRef",
+              "text": "a key of a Kubernetes Secret (`secretKeyRef`)"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "missing_required",
+            "invalid_type",
+            "invalid_scheme"
+          ]
+        },
+        {
+          "name": "DOCUCONF_ROLE",
+          "kind": "var",
+          "type": "enum",
+          "typeLabel": "enum",
+          "required": true,
+          "secret": false,
+          "description": "The role this workload runs: web or worker",
+          "wire": {
+            "text": "one of the values, exactly as listed",
+            "platform": "a string"
+          },
+          "constraints": [
+            {
+              "rule": "values",
+              "params": {
+                "values": [
+                  "web",
+                  "worker"
+                ]
+              },
+              "text": "one of `web` or `worker`"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "missing_required",
+            "not_in_enum"
+          ]
+        },
+        {
+          "name": "LOG_FORMAT",
+          "kind": "var",
+          "type": "enum",
+          "typeLabel": "enum",
+          "required": false,
+          "secret": false,
+          "description": "Log output format",
+          "default": "text",
+          "defaultEnv": [
+            {
+              "name": "LOG_FORMAT",
+              "value": "text"
+            }
+          ],
+          "wire": {
+            "text": "one of the values, exactly as listed",
+            "platform": "a string"
+          },
+          "constraints": [
+            {
+              "rule": "values",
+              "params": {
+                "values": [
+                  "text",
+                  "json"
+                ]
+              },
+              "text": "one of `text` or `json`"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "not_in_enum"
+          ]
+        },
+        {
+          "name": "LOG_SCHEMA_URL",
+          "kind": "var",
+          "type": "url",
+          "typeLabel": "URL",
+          "required": false,
+          "requiredIf": {
+            "var": "LOG_FORMAT",
+            "value": "json"
+          },
+          "secret": false,
+          "description": "JSON schema the structured logs follow",
+          "wire": {
+            "text": "an absolute URL, `scheme://...`, as is",
+            "platform": "a string"
+          },
+          "constraints": [
+            {
+              "rule": "schemes",
+              "params": {
+                "schemes": [
+                  "https"
+                ]
+              },
+              "text": "`https` URL"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "missing_required",
+            "invalid_type",
+            "invalid_scheme"
+          ]
+        },
+        {
+          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "kind": "var",
+          "type": "url",
+          "typeLabel": "URL",
+          "required": false,
+          "secret": false,
+          "description": "Base URL of the OTLP collector",
+          "wire": {
+            "text": "an absolute URL, `scheme://...`, as is",
+            "platform": "a string"
+          },
+          "constraints": [
+            {
+              "rule": "schemes",
+              "params": {
+                "schemes": [
+                  "http",
+                  "https"
+                ]
+              },
+              "text": "`http` or `https` URL"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "invalid_type",
+            "invalid_scheme"
+          ]
+        },
+        {
+          "name": "OTEL_EXPORTER_OTLP_HEADERS",
+          "kind": "var",
+          "type": "string",
+          "typeLabel": "string",
+          "required": false,
+          "secret": true,
+          "description": "Headers sent with every OTLP export, comma-separated key=value pairs",
+          "wire": {
+            "text": "the text as is; it is never trimmed",
+            "platform": "a `secretKeyRef` or `injected` reference, never the value"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "secretKeyRef",
+              "text": "a key of a Kubernetes Secret (`secretKeyRef`)"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "invalid_type"
+          ]
+        },
+        {
+          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+          "kind": "var",
+          "type": "enum",
+          "typeLabel": "enum",
+          "required": false,
+          "secret": false,
+          "description": "Transport protocol for OTLP export",
+          "wire": {
+            "text": "one of the values, exactly as listed",
+            "platform": "a string"
+          },
+          "constraints": [
+            {
+              "rule": "values",
+              "params": {
+                "values": [
+                  "grpc",
+                  "http/protobuf",
+                  "http/json"
+                ]
+              },
+              "text": "one of `grpc`, `http/protobuf` or `http/json`"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "not_in_enum"
+          ]
+        },
+        {
+          "name": "OTEL_LOGS_EXPORTER",
+          "kind": "var",
+          "type": "string",
+          "typeLabel": "string",
+          "required": false,
+          "secret": false,
+          "description": "Log exporters, comma-separated, such as otlp or none",
+          "wire": {
+            "text": "the text as is; it is never trimmed",
+            "platform": "a string"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "fieldRef",
+              "text": "a pod field from the Downward API (`fieldRef`), such as `metadata.namespace`"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": []
+        },
+        {
+          "name": "OTEL_METRICS_EXPORTER",
+          "kind": "var",
+          "type": "string",
+          "typeLabel": "string",
+          "required": false,
+          "secret": false,
+          "description": "Metric exporters, comma-separated, such as otlp or none",
+          "wire": {
+            "text": "the text as is; it is never trimmed",
+            "platform": "a string"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "fieldRef",
+              "text": "a pod field from the Downward API (`fieldRef`), such as `metadata.namespace`"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": []
+        },
+        {
+          "name": "OTEL_PROPAGATORS",
+          "kind": "var",
+          "type": "string",
+          "typeLabel": "string",
+          "required": false,
+          "secret": false,
+          "description": "Context propagators, comma-separated, such as tracecontext,baggage",
+          "wire": {
+            "text": "the text as is; it is never trimmed",
+            "platform": "a string"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "fieldRef",
+              "text": "a pod field from the Downward API (`fieldRef`), such as `metadata.namespace`"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": []
+        },
+        {
+          "name": "OTEL_RESOURCE_ATTRIBUTES",
+          "kind": "var",
+          "type": "string",
+          "typeLabel": "string",
+          "required": false,
+          "secret": false,
+          "description": "Resource attributes, comma-separated key=value pairs",
+          "wire": {
+            "text": "the text as is; it is never trimmed",
+            "platform": "a string"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "fieldRef",
+              "text": "a pod field from the Downward API (`fieldRef`), such as `metadata.namespace`"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": []
+        },
+        {
+          "name": "OTEL_SDK_DISABLED",
+          "kind": "var",
+          "type": "bool",
+          "typeLabel": "boolean",
+          "required": false,
+          "secret": false,
+          "description": "Disable the OpenTelemetry SDK entirely",
+          "wire": {
+            "text": "`true` or `false`",
+            "platform": "a boolean"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "invalid_type"
+          ]
+        },
+        {
+          "name": "OTEL_SERVICE_NAME",
+          "kind": "var",
+          "type": "string",
+          "typeLabel": "string",
+          "required": false,
+          "secret": false,
+          "description": "Service name reported in telemetry",
+          "wire": {
+            "text": "the text as is; it is never trimmed",
+            "platform": "a string"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "fieldRef",
+              "text": "a pod field from the Downward API (`fieldRef`), such as `metadata.namespace`"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": []
+        },
+        {
+          "name": "OTEL_TRACES_EXPORTER",
+          "kind": "var",
+          "type": "string",
+          "typeLabel": "string",
+          "required": false,
+          "secret": false,
+          "description": "Trace exporters, comma-separated, such as otlp or none",
+          "wire": {
+            "text": "the text as is; it is never trimmed",
+            "platform": "a string"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "fieldRef",
+              "text": "a pod field from the Downward API (`fieldRef`), such as `metadata.namespace`"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": []
+        },
+        {
+          "name": "OTEL_TRACES_SAMPLER",
+          "kind": "var",
+          "type": "enum",
+          "typeLabel": "enum",
+          "required": false,
+          "secret": false,
+          "description": "Sampler for traces",
+          "wire": {
+            "text": "one of the values, exactly as listed",
+            "platform": "a string"
+          },
+          "constraints": [
+            {
+              "rule": "values",
+              "params": {
+                "values": [
+                  "always_on",
+                  "always_off",
+                  "traceidratio",
+                  "parentbased_always_on",
+                  "parentbased_always_off",
+                  "parentbased_traceidratio",
+                  "jaeger_remote",
+                  "parentbased_jaeger_remote",
+                  "xray"
+                ]
+              },
+              "text": "one of `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off`, `parentbased_traceidratio`, `jaeger_remote`, `parentbased_jaeger_remote` or `xray`"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "not_in_enum"
+          ]
+        },
+        {
+          "name": "OTEL_TRACES_SAMPLER_ARG",
+          "kind": "var",
+          "type": "string",
+          "typeLabel": "string",
+          "required": false,
+          "secret": false,
+          "description": "Argument for the sampler, such as the ratio for traceidratio",
+          "wire": {
+            "text": "the text as is; it is never trimmed",
+            "platform": "a string"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "fieldRef",
+              "text": "a pod field from the Downward API (`fieldRef`), such as `metadata.namespace`"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": []
+        },
+        {
+          "name": "PORT",
+          "kind": "var",
+          "type": "int",
+          "typeLabel": "integer",
+          "required": false,
+          "roles": [
+            "web"
+          ],
+          "secret": false,
+          "description": "Port the web server listens on",
+          "default": 8080,
+          "defaultEnv": [
+            {
+              "name": "PORT",
+              "value": "8080"
+            }
+          ],
+          "wire": {
+            "text": "a base-10 integer with no leading `+` or zeros, such as `8080`",
+            "platform": "an integer"
+          },
+          "constraints": [
+            {
+              "rule": "range",
+              "params": {
+                "max": 65535,
+                "min": 1
+              },
+              "text": "between 1 and 65535"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "resourceFieldRef",
+              "text": "a container resource limit or request (`resourceFieldRef`), such as `limits.memory`"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "invalid_type",
+            "out_of_range"
+          ]
+        },
+        {
+          "name": "QUEUES",
+          "kind": "var",
+          "type": "list",
+          "typeLabel": "list of strings",
+          "required": true,
+          "roles": [
+            "worker"
+          ],
+          "secret": false,
+          "description": "Queues the worker takes jobs from, in priority order",
+          "wire": {
+            "encoding": "csv",
+            "separator": ",",
+            "text": "the items joined by `,` with nothing around it, such as `a,b`",
+            "platform": "a list of strings, such as `[a, b]`; docuconf writes it in the wire format"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "missing_required",
+            "invalid_type"
+          ]
+        },
+        {
+          "name": "WEBHOOKS_ENABLED",
+          "kind": "var",
+          "type": "bool",
+          "typeLabel": "boolean",
+          "required": false,
+          "roles": [
+            "worker"
+          ],
+          "secret": false,
+          "description": "Send order webhooks to partners",
+          "default": false,
+          "defaultEnv": [
+            {
+              "name": "WEBHOOKS_ENABLED",
+              "value": "false"
+            }
+          ],
+          "wire": {
+            "text": "`true` or `false`",
+            "platform": "a boolean"
+          },
+          "constraints": [],
+          "sources": [
+            {
+              "kind": "literal",
+              "text": "a literal value in the platform's values file"
+            },
+            {
+              "kind": "configMapKeyRef",
+              "text": "a key of a ConfigMap (`configMapKeyRef`), checked at boot"
+            },
+            {
+              "kind": "injected",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "invalid_type"
+          ]
+        },
+        {
+          "name": "webhook-signing-key",
+          "kind": "file",
+          "type": "text",
+          "typeLabel": "text file",
+          "required": false,
+          "requiredIf": {
+            "var": "WEBHOOKS_ENABLED",
+            "value": true
+          },
+          "roles": [
+            "worker"
+          ],
+          "secret": true,
+          "description": "Key that signs outgoing order webhooks",
+          "file": {
+            "path": "/etc/shop/webhooks/signing.key",
+            "reload": "restart",
+            "contents": "a UTF-8 text file",
+            "reloadText": "the app reads the file at startup; a changed source needs a rollout"
+          },
+          "constraints": [
+            {
+              "rule": "length",
+              "params": {
+                "minLength": 32
+              },
+              "text": "at least 32 characters (Unicode code points)"
+            }
+          ],
+          "sources": [
+            {
+              "kind": "secret",
+              "text": "a Kubernetes Secret (`secret`), one key per file"
+            },
+            {
+              "kind": "csi",
+              "text": "the Secrets Store CSI driver (`csi`)"
+            },
+            {
+              "kind": "injected",
+              "note": "the injector writes the file at the path",
+              "text": "supplied when the container starts by an injector (`injected`), such as Bank-Vaults, `op run` or the Vault Agent injector; checked at boot"
+            }
+          ],
+          "errors": [
+            "out_of_range",
+            "file_missing",
+            "file_unreadable",
+            "file_malformed"
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": "missing_required",
+      "meaning": "A required input is not set, and has no default.",
+      "fix": "Set it through one of its allowed sources."
+    },
+    {
+      "code": "invalid_type",
+      "meaning": "The value does not parse as the input's type in its wire format, or a secret still holds an unresolved injector reference (`vault:`, `op://`, `ref+`).",
+      "fix": "Write the value in the input's wire format. For an injected secret, make sure the injector runs."
+    },
+    {
+      "code": "out_of_range",
+      "meaning": "A number, duration, length, list item or key is outside the input's bounds; an empty key always is.",
+      "fix": "Use a value within the input's constraints."
+    },
+    {
+      "code": "not_in_enum",
+      "meaning": "The value is not one of the allowed values.",
+      "fix": "Use one of the listed values, spelled exactly as listed."
+    },
+    {
+      "code": "invalid_scheme",
+      "meaning": "The URL's scheme is not one of the allowed schemes.",
+      "fix": "Use a URL with an allowed scheme."
+    },
+    {
+      "code": "file_missing",
+      "meaning": "The file is not at its path.",
+      "fix": "Give the input a source, and check that it is mounted at the declared path (or that its path variable points at it)."
+    },
+    {
+      "code": "file_unreadable",
+      "meaning": "The file exists but cannot be read.",
+      "fix": "Check the mount, the file mode and the user the app runs as."
+    },
+    {
+      "code": "file_malformed",
+      "meaning": "The file does not parse in its format, is a directory, is not UTF-8 text, or holds too few certificates.",
+      "fix": "Fix the content so it parses in the declared format."
+    }
+  ]
+}
